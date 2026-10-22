@@ -1,0 +1,6 @@
+{
+  "app": "torob-backend",
+  "platform": "docker",
+  "port": 80,
+  "team-id": "6ad8a51444c34b609f1a640d"
+}

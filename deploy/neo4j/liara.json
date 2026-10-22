@@ -1,0 +1,12 @@
+{
+  "disks": [
+    {
+      "name": "data",
+      "mountTo": "/data"
+    }
+  ],
+  "app": "torob-neo4j",
+  "platform": "docker",
+  "port": 7474,
+  "team-id": "6ad8a51444c34b609f1a640d"
+}

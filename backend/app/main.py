@@ -155,9 +155,9 @@ async def start_inquiry(req: InquiryRequest, user: dict = Depends(current_user))
 
 
 @app.post("/api/voip-test")
-async def voip_test_start(dtmf: str = "rfc2833", user: dict = Depends(current_user)):
+async def voip_test_start(dtmf: str | None = None, user: dict = Depends(current_user)):
     """Diagnostic: ring the account's own phone, ask for a few keys and #, report what reached the backend.
-    dtmf=info leaves telephone-event out of the offer, to see whether keys then come as SIP INFO."""
+    dtmf=info|rfc2833 overrides VOIP_DTMF (info: keys as SIP INFO, rfc2833: keys inside the audio)."""
     return voiptest.start(user["phone"], dtmf)
 
 

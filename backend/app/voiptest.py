@@ -72,8 +72,9 @@ def _verdict(r: dict) -> str:
     return "answered, no key received (no audio statistics)"
 
 
-async def run(number: str, dtmf: str = "rfc2833") -> dict:
-    """dtmf: rfc2833 (keys inside the audio) or info (telephone-event left out of the offer)."""
+async def run(number: str, dtmf: str | None = None) -> dict:
+    """dtmf: rfc2833 (keys inside the audio) or info (telephone-event left out of the offer); default VOIP_DTMF."""
+    dtmf = dtmf or voip.SIP_DTMF
     report: dict = {"number": number, "dtmf_offer": dtmf, "server": voip.SIP_SERVER, "transport": voip.SIP_TRANSPORT,
                     "srtp": voip.SIP_SRTP, "started_at": datetime.now(timezone.utc).isoformat(),
                     "answered": False, "keys": [], "audio": None, "remote_rtp": None, "end_reason": None}
@@ -110,9 +111,9 @@ async def run(number: str, dtmf: str = "rfc2833") -> dict:
     return report
 
 
-def start(phone: str, dtmf: str = "rfc2833") -> dict:
+def start(phone: str, dtmf: str | None = None) -> dict:
     """Start a test call to `phone` in the background; poll get(id)."""
-    dtmf = "info" if dtmf == "info" else "rfc2833"
+    dtmf = dtmf if dtmf in ("info", "rfc2833") else voip.SIP_DTMF
     test_id = uuid.uuid4().hex[:12]
     job = {"id": test_id, "phone": phone, "status": "running", "report": None}
     _tests[test_id] = job
@@ -135,5 +136,5 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
     if len(sys.argv) not in (2, 3):
         sys.exit("usage: python -m app.voiptest <phone number> [rfc2833|info]")
-    print(json.dumps(asyncio.run(run(sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else "rfc2833")),
+    print(json.dumps(asyncio.run(run(sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else None)),
                      ensure_ascii=False, indent=2))

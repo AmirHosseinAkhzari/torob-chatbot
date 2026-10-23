@@ -24,6 +24,10 @@ SIP_PASSWORD = os.environ.get("VOIP_PASSWORD", "")
 SIP_TRANSPORT = os.environ.get("VOIP_TRANSPORT", "udp").strip().lower()
 SIP_PORT = int(os.environ.get("VOIP_PORT") or (5061 if SIP_TRANSPORT == "tls" else 5060))
 SIP_STUN = os.environ.get("VOIP_STUN", "").strip()        # host:port, for the public audio address behind NAT
+# How the phone's keys come back: rfc2833 (inside the audio stream, UDP) or info (SIP INFO over the
+# signalling connection). Liara lets no UDP back in, so the audio never arrives there; with info,
+# telephone-event is left out of the offer and Navaphone sends the keys as SIP INFO over TLS.
+SIP_DTMF = os.environ.get("VOIP_DTMF", "rfc2833").strip().lower()
 # off | optional | mandatory. Over tls, encrypted audio is offered like call.sh (--use-srtp 1).
 SIP_SRTP = (os.environ.get("VOIP_SRTP") or ("optional" if SIP_TRANSPORT == "tls" else "off")).strip().lower()
 CALLCTL = os.environ.get("CALLCTL_BIN") or str(Path(__file__).resolve().parents[1] / "callctl" / "callctl")
@@ -76,10 +80,10 @@ class Hangup(Exception):
 class Call:
     """A live call. Use `async with Call(number) as call:`; then `await call.answered()`, `play`, `key`."""
 
-    def __init__(self, number: str, debug_log: Path | None = None, dtmf: str = "rfc2833"):
+    def __init__(self, number: str, debug_log: Path | None = None, dtmf: str | None = None):
         self.uri = dial_uri(number)
         self.debug_log = debug_log       # full SIP log of this call only (voiptest.py)
-        self.dtmf = dtmf                 # rfc2833 (keys in the audio) or info (ask for SIP INFO)
+        self.dtmf = dtmf or SIP_DTMF     # rfc2833 (keys in the audio) or info (keys as SIP INFO)
         self.remote_rtp: str | None = None
         self.proc: asyncio.subprocess.Process | None = None
         self.work = Path(tempfile.mkdtemp(prefix="callctl-"))

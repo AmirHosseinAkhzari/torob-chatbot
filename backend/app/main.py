@@ -155,9 +155,10 @@ async def start_inquiry(req: InquiryRequest, user: dict = Depends(current_user))
 
 
 @app.post("/api/voip-test")
-async def voip_test_start(user: dict = Depends(current_user)):
-    """Diagnostic: ring the account's own phone, ask for a few keys and #, report what reached the backend."""
-    return voiptest.start(user["phone"])
+async def voip_test_start(dtmf: str = "rfc2833", user: dict = Depends(current_user)):
+    """Diagnostic: ring the account's own phone, ask for a few keys and #, report what reached the backend.
+    dtmf=info leaves telephone-event out of the offer, to see whether keys then come as SIP INFO."""
+    return voiptest.start(user["phone"], dtmf)
 
 
 @app.get("/api/voip-test/{test_id}")

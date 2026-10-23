@@ -5,7 +5,9 @@
  *
  * Config file (one "key value" per line): server, user, password, and optionally
  *   transport udp|tcp|tls (default udp), port (default 5060, 5061 for tls), ca <CA bundle for tls>,
- *   stun <host:port> (public address for the audio), srtp off|optional|mandatory (default off).
+ *   stun <host:port> (public address for the audio), srtp off|optional|mandatory (default off),
+ *   dtmf rfc2833|info (default rfc2833; info leaves telephone-event out of the offer, so a server that
+ *   can't send keys in the audio stream may send them as SIP INFO over the signalling connection).
  * Over tcp/tls everything goes through the server as outbound proxy (like call.sh: --proxy <server>;lr),
  * and with tls, SRTP needs the TLS signalling (--srtp-secure 1).
  * Commands on stdin:   PLAY <wav path>   play a clip into the call once (replaces the one playing)
@@ -156,7 +158,7 @@ static void on_transport_state(pjsip_transport *tp, pjsip_transport_state state,
 }
 
 typedef struct {
-    char server[400], user[400], pass[400], transport[8], ca[600], stun[200], srtp[16];
+    char server[400], user[400], pass[400], transport[8], ca[600], stun[200], srtp[16], dtmf[16];
     int port;
 } config_t;
 
@@ -167,6 +169,7 @@ static int read_config(const char *path, config_t *c) {
     memset(c, 0, sizeof *c);
     strcpy(c->transport, "udp");
     strcpy(c->srtp, "off");
+    strcpy(c->dtmf, "rfc2833");
     while (fgets(line, sizeof line, f)) {
         if (sscanf(line, "%63s %799[^\r\n]", key, val) != 2) continue;
         if (!strcmp(key, "server")) snprintf(c->server, sizeof c->server, "%s", val);
@@ -177,6 +180,7 @@ static int read_config(const char *path, config_t *c) {
         else if (!strcmp(key, "ca")) snprintf(c->ca, sizeof c->ca, "%s", val);
         else if (!strcmp(key, "stun")) snprintf(c->stun, sizeof c->stun, "%s", val);
         else if (!strcmp(key, "srtp")) snprintf(c->srtp, sizeof c->srtp, "%s", val);
+        else if (!strcmp(key, "dtmf")) snprintf(c->dtmf, sizeof c->dtmf, "%s", val);
     }
     fclose(f);
     if (!c->port) c->port = strcmp(c->transport, "tls") ? 5060 : 5061;
@@ -233,6 +237,10 @@ int main(int argc, char **argv) {
     media_cfg.no_vad = PJ_TRUE;
     media_cfg.ec_tail_len = 0;
     if (pjsua_init(&cfg, &log_cfg, &media_cfg) != PJ_SUCCESS) { emit("ERROR pjsua_init"); return 1; }
+    if (!strcmp(c.dtmf, "info")) {   /* no telephone-event in the SDP offer */
+        pj_bool_t has_te = PJ_FALSE;
+        pjmedia_endpt_set_flag(pjsua_get_pjmedia_endpt(), PJMEDIA_ENDPT_HAS_TELEPHONE_EVENT_FLAG, &has_te);
+    }
 
     pjsua_transport_config_default(&tcfg);
     tcfg.port = 0;

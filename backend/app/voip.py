@@ -76,9 +76,10 @@ class Hangup(Exception):
 class Call:
     """A live call. Use `async with Call(number) as call:`; then `await call.answered()`, `play`, `key`."""
 
-    def __init__(self, number: str, debug_log: Path | None = None):
+    def __init__(self, number: str, debug_log: Path | None = None, dtmf: str = "rfc2833"):
         self.uri = dial_uri(number)
         self.debug_log = debug_log       # full SIP log of this call only (voiptest.py)
+        self.dtmf = dtmf                 # rfc2833 (keys in the audio) or info (ask for SIP INFO)
         self.remote_rtp: str | None = None
         self.proc: asyncio.subprocess.Process | None = None
         self.work = Path(tempfile.mkdtemp(prefix="callctl-"))
@@ -99,7 +100,7 @@ class Call:
         await _line.acquire()
         cfg = self.work / "account.cfg"
         lines = [f"server {SIP_SERVER}", f"user {SIP_USER}", f"password {SIP_PASSWORD}",
-                 f"transport {SIP_TRANSPORT}", f"port {SIP_PORT}", f"srtp {SIP_SRTP}"]
+                 f"transport {SIP_TRANSPORT}", f"port {SIP_PORT}", f"srtp {SIP_SRTP}", f"dtmf {self.dtmf}"]
         if SIP_TRANSPORT == "tls" and (ca := _ca_bundle()):
             lines.append(f"ca {ca}")
         if SIP_STUN:

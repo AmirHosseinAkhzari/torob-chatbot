@@ -1,7 +1,8 @@
 """VoIP test call: rings a phone, asks for a few keys and #, and reports what reached the backend.
 
     ../.venv/bin/python -m app.voiptest 09121234567    (from backend/: prints the report)
-    POST /api/voip-test                                 (rings the logged-in account's own phone)
+    ../.venv/bin/python -m app.voiptest 09121234567 info
+    POST /api/voip-test[?dtmf=info]                     (rings the logged-in account's own phone)
 
 The report says whether the call was answered, every key that arrived and how (RFC 2833 inside the audio,
 or SIP INFO), the audio packet counts, where the other side wants our audio, and the useful lines of the
@@ -71,8 +72,9 @@ def _verdict(r: dict) -> str:
     return "answered, no key received (no audio statistics)"
 
 
-async def run(number: str) -> dict:
-    report: dict = {"number": number, "server": voip.SIP_SERVER, "transport": voip.SIP_TRANSPORT,
+async def run(number: str, dtmf: str = "rfc2833") -> dict:
+    """dtmf: rfc2833 (keys inside the audio) or info (telephone-event left out of the offer)."""
+    report: dict = {"number": number, "dtmf_offer": dtmf, "server": voip.SIP_SERVER, "transport": voip.SIP_TRANSPORT,
                     "srtp": voip.SIP_SRTP, "started_at": datetime.now(timezone.utc).isoformat(),
                     "answered": False, "keys": [], "audio": None, "remote_rtp": None, "end_reason": None}
     work = Path(tempfile.mkdtemp(prefix="voiptest-"))
@@ -82,7 +84,7 @@ async def run(number: str) -> dict:
     try:
         prompt, _ = await tts.speak(PROMPT, 1.0, 1.0)
         thanks, _ = await tts.speak(THANKS, 0.3, 0.5)
-        async with voip.Call(number, debug_log=trace) as call:
+        async with voip.Call(number, debug_log=trace, dtmf=dtmf) as call:
             if await call.answered(timeout=45):
                 report["answered"] = True
                 await call.play(prompt)  # keys pressed meanwhile stay queued
@@ -108,20 +110,21 @@ async def run(number: str) -> dict:
     return report
 
 
-def start(phone: str) -> dict:
+def start(phone: str, dtmf: str = "rfc2833") -> dict:
     """Start a test call to `phone` in the background; poll get(id)."""
+    dtmf = "info" if dtmf == "info" else "rfc2833"
     test_id = uuid.uuid4().hex[:12]
     job = {"id": test_id, "phone": phone, "status": "running", "report": None}
     _tests[test_id] = job
 
     async def go():
         try:
-            job["report"] = await run(phone)
+            job["report"] = await run(phone, dtmf)
         finally:
             job["status"] = "done"
 
     asyncio.create_task(go())
-    return {"id": test_id, "status": "running"}
+    return {"id": test_id, "status": "running", "dtmf_offer": dtmf}
 
 
 def get(test_id: str) -> dict | None:
@@ -130,6 +133,7 @@ def get(test_id: str) -> dict | None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
-    if len(sys.argv) != 2:
-        sys.exit("usage: python -m app.voiptest <phone number>")
-    print(json.dumps(asyncio.run(run(sys.argv[1])), ensure_ascii=False, indent=2))
+    if len(sys.argv) not in (2, 3):
+        sys.exit("usage: python -m app.voiptest <phone number> [rfc2833|info]")
+    print(json.dumps(asyncio.run(run(sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else "rfc2833")),
+                     ensure_ascii=False, indent=2))

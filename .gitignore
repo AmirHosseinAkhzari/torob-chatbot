@@ -10,3 +10,6 @@ frontend/next-env.d.ts
 # IRANYekan is a licensed FontIran font: keep the files local, not in git
 frontend/public/fonts/*.woff
 deploy/neo4j/seed/
+.athena_refresh_token
+*.mp3
+backend/callctl/callctl

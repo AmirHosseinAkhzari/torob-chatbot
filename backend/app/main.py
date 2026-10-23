@@ -5,6 +5,7 @@ Everything a person does needs a login (bearer token from /api/auth/otp/verify).
 import asyncio
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -12,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import agent, auth, db, history, insights, inquiry, pg, repo
+from . import agent, auth, db, history, insights, inquiry, pg, repo, test_shop
 from .config import settings
 
 log = logging.getLogger("torob-chat")
@@ -20,9 +21,19 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 logging.getLogger("neo4j").setLevel(logging.ERROR)  # "property does not exist" notices
 
 
+async def _seed_test_shop() -> None:
+    try:
+        await asyncio.to_thread(test_shop.add)
+        log.info("test shop %s is in Neo4j", test_shop.SHOP_ID)
+    except Exception as e:  # Neo4j may still be starting; the app works without the test shop
+        log.warning("could not add the test shop: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await asyncio.to_thread(pg.init)
+    if os.environ.get("SEED_TEST_SHOP", "false").lower() in ("1", "true", "yes"):
+        asyncio.create_task(_seed_test_shop())
     yield
     db.close()
     pg.close()

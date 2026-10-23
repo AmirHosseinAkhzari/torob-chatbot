@@ -2,13 +2,15 @@
 
 Athena TTS (scripts/athena_tts.py) when a token is set, Edge TTS otherwise or when Athena fails
 (Athena's free plan allows only 2 clips a week). Clips are cached by text, so asking the same
-question twice costs nothing. Output: 16 kHz mono 16-bit WAV, converted with macOS `afconvert`.
+question twice costs nothing. Output: 16 kHz mono 16-bit WAV, converted with macOS `afconvert`, or with
+`ffmpeg` / `mpg123` on Linux (the Docker image).
 """
 import asyncio
 import hashlib
 import importlib.util
 import logging
 import os
+import shutil
 import subprocess
 import urllib.request
 import wave
@@ -18,7 +20,7 @@ from .config import ROOT
 
 log = logging.getLogger("torob-chat.tts")
 
-CACHE = ROOT / "data" / "inquiry_audio"
+CACHE = Path(os.environ.get("TTS_CACHE_DIR") or ROOT / "data" / "inquiry_audio")
 EDGE_VOICE = os.environ.get("EDGE_TTS_VOICE", "fa-IR-FaridNeural")
 ATHENA_VOICE = os.environ.get("ATHENA_TTS_VOICE", "kian")
 PROVIDER = os.environ.get("TTS_PROVIDER", "auto")  # auto | athena | edge
@@ -51,10 +53,21 @@ async def _edge_mp3(text: str, out: Path) -> None:
     await edge_tts.Communicate(text, EDGE_VOICE, rate="-5%").save(str(out))
 
 
+def _convert_cmd(mp3: Path, wav: Path) -> list[str]:
+    """MP3 to 16 kHz mono 16-bit WAV with whichever converter is installed."""
+    if shutil.which("afconvert"):  # macOS
+        return ["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", str(mp3), str(wav)]
+    if shutil.which("ffmpeg"):
+        return ["ffmpeg", "-y", "-loglevel", "error", "-i", str(mp3), "-ac", "1", "-ar", "16000",
+                "-c:a", "pcm_s16le", str(wav)]
+    if shutil.which("mpg123"):
+        return ["mpg123", "-q", "--mono", "--rate", "16000", "--encoding", "s16", "-w", str(wav), str(mp3)]
+    raise RuntimeError("no audio converter: install ffmpeg or mpg123")
+
+
 def _to_wav(mp3: Path, wav: Path, lead_silence: float, tail_silence: float) -> None:
     raw = wav.with_suffix(".raw.wav")
-    subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", str(mp3), str(raw)],
-                   check=True, capture_output=True)
+    subprocess.run(_convert_cmd(mp3, raw), check=True, capture_output=True)
     # Pad with silence: the start is often cut while the call connects, and the player loops,
     # so the tail is the pause before the question repeats.
     with wave.open(str(raw)) as src:

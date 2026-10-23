@@ -83,26 +83,26 @@ def spoken_title(title: str) -> str:
     return " ".join(t.split(" ")[:9])
 
 
-# The voice prompts (spoken Persian, short). Keys: یک = 1, دو = 2, مربع = #, ستاره = *.
+# The voice prompts (spoken Persian, short, with vowel marks so the voice says each word right). Keys: یک = 1, دو = 2, مربع = #, ستاره = *.
 def prompt_availability(title: str) -> str:
-    return (f"سلام، وقت بخیر. از تربچه تماس می‌گیرم. «{spoken_title(title)}» رو الان موجود دارید؟ "
-            "اگه دارید یک، اگه ندارید دو رو بزنید.")
+    return (f"سَلام، وَقت بِخِیر. اَز تُرُبچه تَماس می‌گیرَم. «{spoken_title(title)}» رو اَلان مُوجود دارید؟ "
+            "اَگِه دارید یِک، اَگِه نَدارید دو رو بِزَنید.")
 
 
 def prompt_price(price: int) -> str:
-    return f"قیمتش {numwords.toman(price)} است؟ اگه درسته یک، اگه نه دو رو بزنید."
+    return f"قِیمَتِش {numwords.toman(price)} اَست؟ اَگِه دُرُستِه یِک، اَگِه نَه دو رو بِزَنید."
 
 
-PROMPT_ENTER = "لطفاً قیمت درست رو به تومان با صفحه‌کلید وارد کنید و در آخر، مربع رو بزنید."
-PROMPT_ENTER_AGAIN = "لطفاً قیمت رو دوباره وارد کنید و در آخر، مربع رو بزنید."
-PROMPT_NOT_HEARD = "متوجه نشدم."
-PROMPT_WAIT = "یک لحظه."
-PROMPT_THANKS = "ممنون، ثبت شد. روز خوبی داشته باشید."
-PROMPT_BYE = "ممنون از وقتی که گذاشتید. روز خوبی داشته باشید."
+PROMPT_ENTER = "لُطفاً قِیمَتِ دُرُست رو بِه تومان با صَفحه‌کِلید وارِد کُنید و دَر آخَر، مُرَبَّع رو بِزَنید."
+PROMPT_ENTER_AGAIN = "لُطفاً قِیمَت رو دوباره وارِد کُنید و دَر آخَر، مُرَبَّع رو بِزَنید."
+PROMPT_NOT_HEARD = "مُتَوَجِّه نَشُدَم."
+PROMPT_WAIT = "یِک لَحظه."
+PROMPT_THANKS = "مَمنون، ثَبت شُد. روزِ خوبی داشته باشید."
+PROMPT_BYE = "مَمنون اَز وَقتی که گُذاشتید. روزِ خوبی داشته باشید."
 
 
 def prompt_readback(price: int) -> str:
-    return f"قیمتی که وارد کردید {numwords.toman(price)} است. اگه درسته یک، اگه می‌خواید دوباره وارد کنید دو رو بزنید."
+    return f"قِیمَتی که وارِد کَردید {numwords.toman(price)} اَست. اَگِه دُرُستِه یِک، اَگِه می‌خواید دوباره وارِد کُنید دو رو بِزَنید."
 
 
 def product_url(product_id: str, shop_id: str) -> str:

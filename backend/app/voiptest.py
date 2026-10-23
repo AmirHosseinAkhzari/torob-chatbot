@@ -25,8 +25,8 @@ from . import tts, voip
 
 log = logging.getLogger("torob-chat.voiptest")
 
-PROMPT = "سلام، این یک تماس آزمایشی تربچه است. لطفاً چند کلید بزنید، مثلاً یک، دو، سه، و در آخر مربع رو بزنید."
-THANKS = "ممنون، تست تمام شد. خداحافظ."
+PROMPT = "سَلام، این یِک تَماسِ آزمایِشیِ تُرُبچه اَست. لُطفاً چَند کِلید بِزَنید، مَثَلاً یِک، دو، سه، و دَر آخَر مُرَبَّع رو بِزَنید."
+THANKS = "مَمنون، تِست تَمام شُد. خُداحافِظ."
 KEY_WINDOW = 30  # seconds to press keys after the prompt
 
 _KEEP = re.compile(r"RX \d+ bytes (Response|Request) msg|TX \d+ bytes Request msg (INVITE|INFO)|^m=audio|^c=IN"

@@ -1,4 +1,4 @@
-# Liara's mirrors: builds on Liara reach servers outside Iran slowly. Local builds can pass
+# Liara's mirrors (liara.json builds in Iran, where servers outside Iran are slow). Local builds can pass
 # --build-arg DEBIAN_MIRROR=http://deb.debian.org --build-arg PIP_INDEX_URL=https://pypi.org/simple
 ARG DEBIAN_MIRROR=http://linux-mirror.liara.ir/repository
 ARG PIP_INDEX_URL=https://package-mirror.liara.ir/repository/pypi/simple
@@ -14,14 +14,17 @@ RUN sed -i "s|http://deb.debian.org/debian-security|${DEBIAN_MIRROR}/debian-secu
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates libssl-dev \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src/pjproject
-RUN curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 900 "https://github.com/pjsip/pjproject/archive/refs/tags/${PJPROJECT_VERSION}.tar.gz" \
-      | tar -xz --strip-components=1 \
- && ./configure --prefix=/opt/pjproject CFLAGS="-O2 -fPIC" \
+# Separate steps, so a build that runs out of time keeps the finished ones in Liara's cache.
+RUN curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 900 -o /tmp/pj.tar.gz \
+      "https://github.com/pjsip/pjproject/archive/refs/tags/${PJPROJECT_VERSION}.tar.gz" \
+ && tar -xzf /tmp/pj.tar.gz --strip-components=1 && rm /tmp/pj.tar.gz
+RUN ./configure --prefix=/opt/pjproject CFLAGS="-O2 -fPIC" \
       --with-ssl --disable-video --disable-sound --disable-opus --disable-speex-codec --disable-speex-aec \
       --disable-ilbc-codec --disable-gsm-codec --disable-g722-codec --disable-g7221-codec --disable-l16-codec \
       --disable-libyuv --disable-libwebrtc --disable-ffmpeg --disable-v4l2 --disable-openh264 --disable-vpx \
       --disable-bcg729 --disable-upnp \
- && make dep && make -j"$(nproc)" && make install
+ && make dep
+RUN make -j"$(nproc)" && make install
 COPY callctl/callctl.c /src/callctl.c
 RUN cc -O2 -Wall -o /src/callctl /src/callctl.c \
       $(PKG_CONFIG_PATH=/opt/pjproject/lib/pkgconfig pkg-config --cflags --libs --static libpjproject)

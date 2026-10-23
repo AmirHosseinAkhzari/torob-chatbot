@@ -1,12 +1,20 @@
+# Liara's mirrors: builds on Liara reach servers outside Iran slowly. Local builds can pass
+# --build-arg DEBIAN_MIRROR=http://deb.debian.org --build-arg PIP_INDEX_URL=https://pypi.org/simple
+ARG DEBIAN_MIRROR=http://linux-mirror.liara.ir/repository
+ARG PIP_INDEX_URL=https://package-mirror.liara.ir/repository/pypi/simple
+
 # Stage 1: callctl, the SIP call helper the store inquiry drives (callctl/callctl.c).
 # Debian has no pjproject package, so pjproject is built from source: SIP over UDP, TCP and TLS
 # (OpenSSL), G.711 and telephone-event only, no sound card or video.
 FROM python:3.12-slim AS callctl
 ARG PJPROJECT_VERSION=2.17
+ARG DEBIAN_MIRROR
+RUN sed -i "s|http://deb.debian.org/debian-security|${DEBIAN_MIRROR}/debian-security|; s|http://deb.debian.org/debian|${DEBIAN_MIRROR}/debian|" \
+      /etc/apt/sources.list.d/debian.sources
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates libssl-dev \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src/pjproject
-RUN curl -fsSL "https://github.com/pjsip/pjproject/archive/refs/tags/${PJPROJECT_VERSION}.tar.gz" \
+RUN curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 900 "https://github.com/pjsip/pjproject/archive/refs/tags/${PJPROJECT_VERSION}.tar.gz" \
       | tar -xz --strip-components=1 \
  && ./configure --prefix=/opt/pjproject CFLAGS="-O2 -fPIC" \
       --with-ssl --disable-video --disable-sound --disable-opus --disable-speex-codec --disable-speex-aec \
@@ -20,6 +28,10 @@ RUN cc -O2 -Wall -o /src/callctl /src/callctl.c \
 
 # Stage 2: the API. mpg123 turns the TTS MP3 into the WAV the call plays (app/tts.py).
 FROM python:3.12-slim
+ARG DEBIAN_MIRROR
+ARG PIP_INDEX_URL
+RUN sed -i "s|http://deb.debian.org/debian-security|${DEBIAN_MIRROR}/debian-security|; s|http://deb.debian.org/debian|${DEBIAN_MIRROR}/debian|" \
+      /etc/apt/sources.list.d/debian.sources
 RUN apt-get update && apt-get install -y --no-install-recommends mpg123 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY requirements.txt .

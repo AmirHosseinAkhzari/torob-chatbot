@@ -4,3 +4,4 @@ openai>=1.60
 neo4j>=5.26
 pydantic>=2.9
 edge-tts>=7.0  # store inquiry voice (fallback when no Athena token)
+psycopg[binary,pool]>=3.2  # accounts, history, store insights (Postgres)

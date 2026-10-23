@@ -1,11 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { useConversations } from "@/lib/store";
+import { getMe, logout } from "@/lib/api";
+import { faDigits } from "@/lib/format";
+import { getSession, saveSession, useConversations, useSession, type Session } from "@/lib/store";
+import { applyTheme, currentTheme, cycleTheme, THEME_EVENT, THEME_LABEL, type Theme } from "@/lib/theme";
 import type { Conversation } from "@/lib/types";
-import { CloseIcon, HistoryIcon, MenuIcon, PanelIcon, PlusIcon, SunMoonIcon, TorobLogo } from "./icons";
+import { CloseIcon, HistoryIcon, MenuIcon, PanelIcon, PlusIcon, SunMoonIcon, UserIcon } from "./icons";
 import { UIProvider } from "./UIContext";
 
 function groupLabel(ts: number) {
@@ -47,24 +50,60 @@ function ConversationList({ list, currentId, onNavigate }: { list: Conversation[
   );
 }
 
-function toggleTheme() {
-  const root = document.documentElement;
-  const dark = root.dataset.theme ? root.dataset.theme === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const next = dark ? "light" : "dark";
-  root.dataset.theme = next;
-  try { localStorage.setItem("torob-chat:theme", next); } catch { /* ignore */ }
+/** The signed-in number in the sidebar, with a way out. */
+function Account({ session }: { session: Session | null }) {
+  if (!session) return null;
+  return (
+    <div className="side-account">
+      <UserIcon />
+      <span className="num" dir="ltr">{faDigits(session.phone)}</span>
+      <button className="btn btn-ghost btn-sm" onClick={() => { logout(); saveSession(null); location.href = "/login"; }}>خروج</button>
+    </div>
+  );
+}
+
+function useThemeLabel() {
+  const [t, setT] = useState<Theme>("system");
+  useEffect(() => {
+    const read = () => setT(currentTheme());
+    read();
+    window.addEventListener(THEME_EVENT, read);
+    return () => window.removeEventListener(THEME_EVENT, read);
+  }, []);
+  return THEME_LABEL[t];
 }
 
 export default function AppShell({ children, title }: { children: React.ReactNode; title?: string }) {
   const pathname = usePathname();
   const isHome = pathname === "/";
   const currentId = pathname.startsWith("/c/") ? pathname.slice(3) : null;
+  const router = useRouter();
   const list = useConversations();
+  const session = useSession();
+  const themeLabel = useThemeLabel();
+  const [ready, setReady] = useState(false);
+
+  // Everything needs a login: without a session, go to /login and come back here after.
+  useEffect(() => {
+    if (!getSession()) {
+      router.replace(`/login?next=${encodeURIComponent(location.pathname + location.search)}`);
+      return;
+    }
+    setReady(true);
+    // Settings (the theme) come from the account.
+    getMe().then((me) => {
+      const s = getSession();
+      if (s) saveSession({ ...s, settings: me.settings });
+      applyTheme(me.settings?.theme);
+    }).catch(() => {});
+  }, [router]);
   const [expanded, setExpanded] = useState(!isHome);
   const [drawer, setDrawer] = useState(false);
 
   useEffect(() => setExpanded(!isHome), [isHome]);
   useEffect(() => setDrawer(false), [pathname]);
+
+  if (!ready) return <div className="app" aria-busy="true" />;
 
   return (
     <UIProvider>
@@ -72,31 +111,32 @@ export default function AppShell({ children, title }: { children: React.ReactNod
         {expanded ? (
           <nav className="sidebar desktop-only" aria-label="گفت‌وگوها">
             <div className="side-head">
-              <Link href="/" className="wordmark"><TorobLogo size={28} />تربچت</Link>
+              <Link href="/" className="wordmark"><img className="pixel" src="/brand/radish.png" width={28} height={28} alt="" />تربچه</Link>
               <button className="btn btn-ghost btn-icon" onClick={() => setExpanded(false)} aria-label="بستن فهرست"><PanelIcon /></button>
             </div>
             <Link className="btn btn-secondary" href="/"><PlusIcon />گفت‌وگوی جدید</Link>
             <div className="side-scroll"><ConversationList list={list} currentId={currentId} /></div>
             <div className="side-foot">
-              <button className="btn btn-ghost" style={{ justifyContent: "flex-start" }} onClick={toggleTheme}><SunMoonIcon />تم روشن / تیره</button>
+              <Account session={session} />
+              <button className="btn btn-ghost" style={{ justifyContent: "flex-start" }} onClick={cycleTheme}><SunMoonIcon />{themeLabel}</button>
             </div>
           </nav>
         ) : (
           <nav className="sidebar is-rail desktop-only" aria-label="منو">
-            <Link href="/" aria-label="تربچت" style={{ display: "flex", width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
+            <Link href="/" aria-label="تربچه" style={{ display: "flex", width: 44, height: 44, alignItems: "center", justifyContent: "center" }}>
               <img className="pixel" src="/brand/radish.png" width={32} height={32} alt="" />
             </Link>
             <Link className="btn btn-ghost btn-icon" href="/" aria-label="گفت‌وگوی جدید" style={{ width: 44, height: 44 }}><PlusIcon /></Link>
             <button className="btn btn-ghost btn-icon" onClick={() => setExpanded(true)} aria-label="گفت‌وگوهای قبلی" style={{ width: 44, height: 44 }}><HistoryIcon /></button>
             <span style={{ flex: 1 }} />
-            <button className="btn btn-ghost btn-icon" onClick={toggleTheme} aria-label="تم روشن / تیره" style={{ width: 44, height: 44 }}><SunMoonIcon /></button>
+            <button className="btn btn-ghost btn-icon" onClick={cycleTheme} aria-label={themeLabel} style={{ width: 44, height: 44 }}><SunMoonIcon /></button>
           </nav>
         )}
 
         <div className="main">
           <header className="topbar mobile-only">
             <button className="btn btn-ghost btn-icon" onClick={() => setDrawer(true)} aria-label="گفت‌وگوها" style={{ width: 44, height: 44 }}><MenuIcon /></button>
-            {title ? <span className="topbar-title">{title}</span> : <Link href="/" className="wordmark" style={{ fontSize: 17 }}><TorobLogo size={24} />تربچت</Link>}
+            {title ? <span className="topbar-title">{title}</span> : <Link href="/" className="wordmark" style={{ fontSize: 17 }}><img className="pixel" src="/brand/radish.png" width={24} height={24} alt="" />تربچه</Link>}
             <Link className="btn btn-ghost btn-icon" href="/" aria-label="گفت‌وگوی جدید" style={{ width: 44, height: 44 }}><PlusIcon /></Link>
           </header>
           {children}
@@ -107,13 +147,14 @@ export default function AppShell({ children, title }: { children: React.ReactNod
             <div className="drawer-scrim mobile-only" onClick={() => setDrawer(false)} />
             <nav className="sidebar drawer mobile-only" aria-label="گفت‌وگوها">
               <div className="side-head">
-                <Link href="/" className="wordmark"><TorobLogo size={24} />تربچت</Link>
+                <Link href="/" className="wordmark"><img className="pixel" src="/brand/radish.png" width={24} height={24} alt="" />تربچه</Link>
                 <button className="btn btn-ghost btn-icon" onClick={() => setDrawer(false)} aria-label="بستن" style={{ width: 44, height: 44 }}><CloseIcon /></button>
               </div>
               <Link className="btn btn-secondary btn-lg" href="/"><PlusIcon />گفت‌وگوی جدید</Link>
               <div className="side-scroll"><ConversationList list={list} currentId={currentId} onNavigate={() => setDrawer(false)} /></div>
               <div className="side-foot">
-                <button className="btn btn-ghost" style={{ justifyContent: "flex-start" }} onClick={toggleTheme}><SunMoonIcon />تم روشن / تیره</button>
+                <Account session={session} />
+                <button className="btn btn-ghost" style={{ justifyContent: "flex-start" }} onClick={cycleTheme}><SunMoonIcon />{themeLabel}</button>
               </div>
             </nav>
           </>

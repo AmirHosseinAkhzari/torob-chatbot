@@ -1,49 +1,45 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { fetchConversation, listConversations, putConversation } from "./api";
+import { getSession, SESSION_EVENT, type Session } from "./session";
 import type { Conversation, ProductCard, UserLocation } from "./types";
 
-const KEY = "torob-chat:conversations:v1";
 const LOC_KEY = "torob-chat:location:v1";
 const EVENT = "torob-chat:changed";
 
-function readAll(): Conversation[] {
-  try {
-    const raw = localStorage.getItem(KEY);
-    return raw ? (JSON.parse(raw) as Conversation[]) : [];
-  } catch {
-    return [];
-  }
-}
+// Chat history lives on the account (Postgres). Saves for one conversation go out in order.
+const saving = new Map<string, Promise<unknown>>();
 
-function writeAll(list: Conversation[]) {
+export async function getConversation(id: string): Promise<Conversation | null> {
   try {
-    localStorage.setItem(KEY, JSON.stringify(list.slice(0, 60)));
+    return await fetchConversation(id);
   } catch {
-    /* storage full or blocked: the chat still works for this session */
+    return null;
   }
-  window.dispatchEvent(new Event(EVENT));
-}
-
-export function getConversation(id: string): Conversation | null {
-  return readAll().find((c) => c.id === id) ?? null;
 }
 
 export function saveConversation(conv: Conversation) {
-  const list = readAll().filter((c) => c.id !== conv.id);
-  writeAll([conv, ...list].sort((a, b) => b.updatedAt - a.updatedAt));
+  const prev = saving.get(conv.id) ?? Promise.resolve();
+  const next = prev.then(() => putConversation(conv)).then(() => window.dispatchEvent(new Event(EVENT))).catch(() => {});
+  saving.set(conv.id, next);
 }
 
 export function useConversations(): Conversation[] {
   const [list, setList] = useState<Conversation[]>([]);
   useEffect(() => {
-    const load = () => setList(readAll());
+    let alive = true;
+    const load = () => {
+      if (!getSession()) return setList([]);
+      listConversations().then((r) => alive && setList(r.conversations)).catch(() => {});
+    };
     load();
     window.addEventListener(EVENT, load);
-    window.addEventListener("storage", load);
+    window.addEventListener(SESSION_EVENT, load);
     return () => {
+      alive = false;
       window.removeEventListener(EVENT, load);
-      window.removeEventListener("storage", load);
+      window.removeEventListener(SESSION_EVENT, load);
     };
   }, []);
   return list;
@@ -91,3 +87,21 @@ export function saveLocation(loc: UserLocation | null) {
 
 export const newId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+/* Login session: stored by lib/session.ts; this hook re-renders when it changes. */
+export { getSession, saveSession, type Session } from "./session";
+
+export function useSession(): Session | null {
+  const [s, setS] = useState<Session | null>(null);
+  useEffect(() => {
+    const read = () => setS(getSession());
+    read();
+    window.addEventListener(SESSION_EVENT, read);
+    window.addEventListener("storage", read);
+    return () => {
+      window.removeEventListener(SESSION_EVENT, read);
+      window.removeEventListener("storage", read);
+    };
+  }, []);
+  return s;
+}

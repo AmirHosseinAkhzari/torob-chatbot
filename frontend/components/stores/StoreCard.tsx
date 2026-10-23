@@ -1,34 +1,61 @@
 "use client";
 
-import Link from "next/link";
 import type { Offer } from "@/lib/types";
-import { daysAgo, distance, faDigits, money, priceGap, toLatinDigits } from "@/lib/format";
+import BuyButton, { type BuyTags } from "../BuyButton";
+import { daysAgo, distance, faDigits, priceGap, toLatinDigits } from "@/lib/format";
 import { useIsTouchDevice } from "@/lib/useMedia";
 import { ClockIcon, GlobeIcon, InstagramIcon, NavigateIcon, PhoneIcon, PinIcon, ShieldIcon, TruckIcon } from "../icons";
 import { PaymentChips } from "../PaymentLogo";
 import InquiryButton from "./InquiryButton";
 import SnappButton from "./SnappButton";
 
-/** hideRoute: the pick card above already offers directions and Snapp for this shop.
-    selectHref: in the chat, a "choose this shop" link to the product + shop page (where the inquiry is). */
-type Props = { offer: Offer; productId: string; productTitle: string; productImage: string | null; cheapest: number | null; hideRoute?: boolean; selectHref?: string };
+/** hideRoute: directions and Snapp are offered elsewhere for this shop.
+    selectHref: in the chat, the buy button opens the product + shop page (where the inquiry is); on that page
+    it starts directions to the shop instead.
+    tags: why this shop (نزدیک‌ترین / ارزان‌ترین), shown on the buy button. */
+type Props = {
+  offer: Offer; productId: string; productTitle: string; productImage: string | null; cheapest: number | null;
+  hideRoute?: boolean; selectHref?: string; tags?: BuyTags;
+  /** Called when «خرید از …» is pressed (store insights). */
+  onBuy?: () => void;
+};
+
+/** The shop's logo, or a gray default avatar (like a guest profile picture) when it has none. */
+export function ShopAvatar({ name, logo, size = 48 }: { name: string; logo?: string | null; size?: number }) {
+  if (logo) return <img className="shop-avatar" src={logo} alt={`لوگوی ${name}`} width={size} height={size} referrerPolicy="no-referrer" />;
+  return (
+    <span className="shop-avatar" role="img" aria-label={`لوگوی ${name}`} style={{ width: size, height: size }}>
+      <svg viewBox="0 0 48 48" width={size} height={size} aria-hidden="true">
+        <circle cx="24" cy="18" r="8.5" />
+        <path d="M7 48c1.6-9.5 8.4-15 17-15s15.4 5.5 17 15z" />
+      </svg>
+    </span>
+  );
+}
 
 /** Store details sheet: header, product strip, info rows, actions, payment methods.
     Phones get directions (geo: intent) and Snapp; desktop gets call, Instagram and website only. */
-export default function StoreCard({ offer, productId, productTitle, productImage, cheapest, hideRoute, selectHref }: Props) {
+export default function StoreCard({ offer, productId, productTitle, productImage, cheapest, hideRoute, selectHref, tags, onBuy }: Props) {
   const touch = useIsTouchDevice();
   const s = offer.shop;
   const open = s.hours.open_now;
   const statusCls = open == null ? "is-unknown" : open ? "is-open" : "is-closed";
   const statusText = open == null ? "ساعت کاری ثبت نشده" : open ? "باز است" : "بسته است";
   const phone = s.phones[0];
+  // The price the shop gave by phone (استعلام دستگاه) wins over the listed one.
+  const phonePrice = offer.stock?.status === "available" && offer.stock.verified_price ? offer.stock.verified_price : null;
+  const buyPrice = phonePrice ?? offer.price;
   const gap = offer.price != null && cheapest != null ? offer.price - cheapest : null;
   const geo = s.lat != null && s.lng != null ? `geo:${s.lat},${s.lng}?q=${s.lat},${s.lng}(${encodeURIComponent(s.name)})` : null;
+  // On the shop page, «خرید از …» means going there: the phone's map app, or map directions on a computer.
+  const directions = s.lat != null && s.lng != null
+    ? (touch ? geo! : `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`)
+    : s.website ? (s.website.startsWith("http") ? s.website : `https://${s.website}`) : null;
 
   return (
     <article className="store-card" aria-label={`فروشگاه ${s.name}`}>
       <div className="store-head">
-        <span className="store-initial" aria-hidden="true">{s.name.charAt(0)}</span>
+        <ShopAvatar name={s.name} />
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
           <b style={{ fontSize: 17, lineHeight: "26px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</b>
           <span className="row-sub">
@@ -52,10 +79,6 @@ export default function StoreCard({ offer, productId, productTitle, productImage
             {offer.updated_days != null ? ` · قیمت ${daysAgo(offer.updated_days)}` : ""}
           </span>
         </div>
-        <b className="num" style={{ flex: "none", fontSize: 16 }}>
-          {offer.price != null ? money(offer.price) : "تماس"}
-          {offer.price != null ? <small className="muted" style={{ fontSize: 11, fontWeight: 400 }}> تومان</small> : null}
-        </b>
       </div>
 
       <ul className="info-rows">
@@ -66,14 +89,13 @@ export default function StoreCard({ offer, productId, productTitle, productImage
       </ul>
 
       {selectHref ? (
-        <Link className="btn btn-primary btn-block inq-btn" href={selectHref}>
-          انتخاب این فروشگاه
-          <span className="row-sub" style={{ color: "inherit", opacity: .85 }}>
-            {open ? "مسیر، اسنپ و استعلام موجودی از فروشگاه" : "مسیر و اطلاعات فروشگاه"}
-          </span>
-        </Link>
+        <BuyButton shop={s.name} price={buyPrice} tags={tags} href={selectHref} onClick={onBuy} />
       ) : (
-        <InquiryButton offer={offer} productId={productId} />
+        <>
+          <BuyButton shop={s.name} price={buyPrice} tags={tags} href={directions ?? undefined} external={!!directions && !directions.startsWith("geo:")}
+            onClick={onBuy} />
+          <InquiryButton offer={offer} productId={productId} />
+        </>
       )}
 
       {touch && geo && !hideRoute ? (

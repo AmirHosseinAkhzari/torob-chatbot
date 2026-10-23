@@ -285,7 +285,7 @@ def bnpl_for(product_ids: list[str], pay: str | None, location: dict | None = No
             if point and sh["lat"] is not None and sh["lng"] is not None:
                 dist = round(_haversine_m(point[0], point[1], sh["lat"], sh["lng"]))
             sellers.append({
-                "offer_id": o["offer_id"], "shop": sh["name"], "area": sh["area"], "address": sh["address"],
+                "offer_id": o["offer_id"], "shop_id": sh["id"], "shop": sh["name"], "area": sh["area"], "address": sh["address"],
                 "phone": sh["phones"][0] if sh["phones"] else None, "price": None if o["outlier"] else o["price"],
                 "open_now": sh["hours"]["open_now"], "today": sh["hours"]["today"],
                 "lat": sh["lat"], "lng": sh["lng"], "distance_m": dist,
@@ -317,6 +317,46 @@ def bnpl_for(product_ids: list[str], pay: str | None, location: dict | None = No
             "summary": summary,
         }
     return out
+
+
+def mark_single_seller(cards: list[dict]) -> list[dict]:
+    """When exactly one shop sells the product under the user's filter (the installment filter when set),
+    add single_seller = {shop_id, offer_id, in_person, shop, area, price, open_now, today, distance_m}: the app
+    then offers «خرید از …» straight to that shop instead of a sellers list."""
+    plain = [c["id"] for c in cards if not c.get("bnpl") and c.get("shop_count") == 1]
+    found: dict[str, dict] = {}
+    if plain:
+        rows = db.read(
+            """
+            MATCH (p:Product)<-[:FOR_PRODUCT]-(o:Offer)<-[:HAS_OFFER]-(s:Shop) WHERE p.product_id IN $ids
+            WITH p, collect({shop_id: s.shop_id, offer_id: o.offer_id, in_person: s.location IS NOT NULL,
+                             shop: s.name, area: s.area, hours: s.weekly_hours_json, price: o.price_toman}) AS shops
+            WHERE size(shops) = 1
+            RETURN p.product_id AS pid, shops[0] AS shop
+            """,
+            ids=plain,
+        )
+        for r in rows:
+            sh = dict(r["shop"])
+            h = hours.parse(sh.pop("hours"))
+            price = sh["price"]
+            sh["price"] = int(price) if price and price >= pricing.MIN_VALID_PRICE else None
+            sh.update(open_now=h["open_now"], today=h["today"], distance_m=None)
+            found[r["pid"]] = sh
+    for c in cards:
+        b = c.get("bnpl")
+        if b:
+            one = b["seller_count"] == 1 and b["sellers"]
+            if one:
+                x = b["sellers"][0]
+                c["single_seller"] = {"shop_id": x["shop_id"], "offer_id": x["offer_id"], "in_person": x["lat"] is not None,
+                                      "shop": x["shop"], "area": x["area"], "price": x["price"], "open_now": x["open_now"],
+                                      "today": x["today"], "distance_m": x["distance_m"]}
+            else:
+                c["single_seller"] = None
+        else:
+            c["single_seller"] = found.get(c["id"])
+    return cards
 
 
 def apply_bnpl(cards: list[dict], pay: str | None, location: dict | None = None) -> list[dict]:
@@ -391,7 +431,8 @@ def _offer(o: dict, s: dict, med: int | None) -> dict:
         "seller_title": o.get("seller_title") or None,
         "description": (o.get("description") or "")[:280] or None,
         # Set by a store inquiry (استعلام دستگاه): the shop answered by phone.
-        "stock": {"status": o["stock_status"], "checked_at": o.get("stock_checked_at")} if o.get("stock_status") else None,
+        "stock": {"status": o["stock_status"], "checked_at": o.get("stock_checked_at"),
+                  "price_status": o.get("price_status"), "verified_price": o.get("verified_price_toman")} if o.get("stock_status") else None,
         "shop": {
             "id": s.get("shop_id"),
             "name": s.get("name"),
@@ -409,7 +450,7 @@ def _offer(o: dict, s: dict, med: int | None) -> dict:
     }
 
 
-_OFFER_FIELDS = "o {.offer_id, .price_toman, .last_price_changed_at, .warranty, .warranty_months, .warranty_provider, .seller_title, .description, .stock_status, stock_checked_at: toString(o.stock_checked_at)}"
+_OFFER_FIELDS = "o {.offer_id, .price_toman, .last_price_changed_at, .warranty, .warranty_months, .warranty_provider, .seller_title, .description, .stock_status, .price_status, .verified_price_toman, stock_checked_at: toString(o.stock_checked_at)}"
 _SHOP_FIELDS = ("s {.shop_id, .name, .area, .address, .phones, .website_url, .instagram_handle, .supports_fast_delivery, "
                 ".payment_providers, .weekly_hours_json, lat: s.location.latitude, lng: s.location.longitude}")
 
@@ -504,6 +545,8 @@ def stores_for_product(product_id: str, lat: float | None = None, lng: float | N
     candidates = [o for o in product["offers"]
                   if o["shop"]["lat"] is not None and o["shop"]["lng"] is not None
                   and (not pay or accepted_providers(o["shop"]["payments"], pay))]
+    everywhere = candidates  # the recommendation looks across Tehran, the list only near the user
+    gps = (lat, lng) if lat is not None and lng is not None else None
     area_fallback = False
     if area:
         in_area = [o for o in candidates if o["shop"]["area"] == area]
@@ -534,6 +577,15 @@ def stores_for_product(product_id: str, lat: float | None = None, lng: float | N
     if shop and not any(x["shop"]["id"] == shop for x in shown):
         shown += [x for x in stores[30:] if x["shop"]["id"] == shop][:1]
     stores = shown
+    rec = recommend(everywhere, gps, area)
+    left = left_out(everywhere, rec, gps, area)
+    if rec:
+        # The recommended shops may sit outside the listed ones (e.g. cheapest in Tehran): add them.
+        listed = {x["offer_id"] for x in stores}
+        for opt in rec["options"]:
+            if opt["offer_id"] not in listed:
+                stores.append(opt.pop("_store"))
+            opt.pop("_store", None)
     return {
         "product": {k: product[k] for k in ("id", "title", "image", "price", "shop_count")},
         "online_min": online_min,
@@ -542,6 +594,114 @@ def stores_for_product(product_id: str, lat: float | None = None, lng: float | N
         "area": area,
         "area_fallback": area_fallback,
         "pick": pick_store(stores, online_min, None if area_fallback else area),
+        "recommendation": rec,
+        # Not for the client: why each other shop was not recommended (saved by insights, then dropped).
+        "_left_out": left,
+    }
+
+
+# Recommendation: nearest store, cheapest store nearby, cheapest in Tehran — from reliable offers only.
+NEARBY_M = 3000          # "nearby" = within 3 km, or in the user's neighborhood
+FRESH_DAYS = 90          # older prices are not trusted for a recommendation
+NEAREST_WINS_GAP = 0.05  # the nearest shop stays first unless a nearby one is more than 5% cheaper
+AREA_NAME_M = 2500       # name the user's neighborhood from GPS when its center is this close
+
+
+def reliable(st: dict) -> bool:
+    """A price we can recommend: listed, not a suspicious outlier, recent, and not denied by phone."""
+    return (st["price"] is not None and not st["outlier"]
+            and st["updated_days"] is not None and st["updated_days"] <= FRESH_DAYS
+            and (st.get("stock") or {}).get("status") != "unavailable")
+
+
+def _neighborhood(lat: float, lng: float) -> str | None:
+    best = min(areas(), key=lambda a: _haversine_m(lat, lng, a["lat"], a["lng"]), default=None)
+    return best["name"] if best and _haversine_m(lat, lng, best["lat"], best["lng"]) <= AREA_NAME_M else None
+
+
+def recommend(offers: list[dict], gps: tuple[float, float] | None, area: str | None) -> dict | None:
+    """{primary, options: [{offer_id, roles}], neighborhood, ...} or None when no offer is reliable.
+    roles: nearest, cheapest_nearby, cheapest_city. Distances are real only with GPS; with a
+    neighborhood, "near" means in that neighborhood (its center ranks the rest)."""
+    point = gps or (_user_point({"area": area}) if area else None)
+    neighborhood = area or (_neighborhood(*gps) if gps else None)
+    ok = []
+    for o in offers:
+        if not reliable(o):
+            continue
+        st = dict(o)
+        st["_d"] = _haversine_m(point[0], point[1], o["shop"]["lat"], o["shop"]["lng"]) if point else None
+        st["distance_m"] = round(st["_d"]) if gps else None
+        ok.append(st)
+    if not ok:
+        return None
+
+    verified = lambda x: (x.get("stock") or {}).get("status") == "available"  # noqa: E731
+    by_price = lambda x: (x["price"], not verified(x), x["_d"] or 0)  # noqa: E731
+    cheapest_city = min(ok, key=by_price)
+    nearest = cheapest_nearby = None
+    if point:
+        not_closed = [x for x in ok if x["shop"]["hours"]["open_now"] is not False] or ok
+        nearest = min(not_closed, key=lambda x: (x["_d"], x["price"]))
+        nearby = [x for x in ok if x["_d"] <= NEARBY_M or (neighborhood and x["shop"]["area"] == neighborhood)]
+        cheapest_nearby = min(nearby, key=by_price) if nearby else None
+
+    def gap(a, b):  # how much more a costs than b, as a fraction of b
+        return (a["price"] - b["price"]) / b["price"]
+
+    if not point:
+        primary = cheapest_city
+    elif cheapest_nearby is None:
+        # Nothing near: the nearest only if it is about as cheap as the best price in Tehran.
+        primary = nearest if gap(nearest, cheapest_city) <= NEAREST_WINS_GAP else cheapest_city
+    elif nearest["offer_id"] == cheapest_nearby["offer_id"] or gap(nearest, cheapest_nearby) <= NEAREST_WINS_GAP:
+        primary = nearest
+    else:
+        primary = cheapest_nearby
+
+    roles: dict[str, list[str]] = {}
+    order: list[dict] = []
+
+    def add(st, role):
+        if st is None:
+            return
+        if st["offer_id"] not in roles:
+            roles[st["offer_id"]] = []
+            order.append(st)
+        roles[st["offer_id"]].append(role)
+
+    add(primary, "primary")
+    add(nearest, "nearest")
+    add(cheapest_nearby, "cheapest_nearby")
+    # Tehran-wide only when it beats what is near the user.
+    best_near = cheapest_nearby or (nearest if point else None)
+    if best_near is None or cheapest_city["price"] < best_near["price"]:
+        add(cheapest_city, "cheapest_city")
+    if point and cheapest_nearby and cheapest_nearby["offer_id"] == cheapest_city["offer_id"]:
+        roles[cheapest_city["offer_id"]].append("cheapest_city")
+
+    options = []
+    for st in order:
+        r = [x for x in roles[st["offer_id"]] if x != "primary"]
+        options.append({
+            "offer_id": st["offer_id"],
+            "roles": r,
+            "primary": st["offer_id"] == primary["offer_id"],
+            "price": st["price"],
+            "distance_m": st["distance_m"],
+            "verified": verified(st),
+            "_store": {k: v for k, v in st.items() if k != "_d"},
+        })
+    return {
+        "primary": primary["offer_id"],
+        "options": options,
+        "located": bool(point),
+        "gps": bool(gps),
+        "neighborhood": neighborhood,
+        "city": "تهران",
+        "nearby_m": NEARBY_M,
+        "fresh_days": FRESH_DAYS,
+        "unreliable": sum(1 for o in offers if not reliable(o)),
     }
 
 
@@ -555,23 +715,36 @@ def areas() -> list[dict]:
     return rows
 
 
-def detect_place(q: str) -> dict | None:
-    words = tokens(q)
-    text = " ".join(words)
-    for a in areas():
-        if a["name"] and re.search(rf"(^|\s){re.escape(normalize(a['name']))}($|\s)", text):
-            return {"name": a["name"], "kind": "area", "covered": True, "lat": a["lat"], "lng": a["lng"]}
-    for c in CITIES:
-        if c in words:
-            return {"name": c, "kind": "city", "covered": c == "تهران"}
-    return None
-
-
-def live_search(q: str) -> dict:
-    q = normalize(q)
-    place = detect_place(q)
-    product_q = q
-    if place:
-        product_q = normalize(re.sub(rf"(^|\s){re.escape(place['name'])}($|\s)", " ", q))
-    products = search_products(product_q, limit=6, prefix=True) if len(product_q) >= 2 else []
-    return {"query": q, "place": place, "products": products}
+def left_out(offers: list[dict], rec: dict | None, gps: tuple[float, float] | None, area: str | None) -> list[dict]:
+    """Every shop that sells the product but was not recommended, with why (for store insights)."""
+    picked = {o["offer_id"] for o in (rec or {}).get("options", [])}
+    point = gps or (_user_point({"area": area}) if area else None)
+    dist = lambda o: _haversine_m(point[0], point[1], o["shop"]["lat"], o["shop"]["lng"]) if point else None  # noqa: E731
+    good = [o for o in offers if reliable(o)]
+    cheapest = min((o["price"] for o in good), default=None)
+    nearest = min((dist(o) for o in good), default=None) if point else None
+    out = []
+    for o in offers:
+        if o["offer_id"] in picked:
+            continue
+        d = dist(o)
+        reasons: list[str] = []
+        if o["price"] is None:
+            reasons.append("no_price")
+        elif o["outlier"]:
+            reasons.append("outlier_price")
+        if o["updated_days"] is not None and o["updated_days"] > FRESH_DAYS:
+            reasons.append("stale_price")
+        if (o.get("stock") or {}).get("status") == "unavailable":
+            reasons.append("said_unavailable")
+        if reliable(o):
+            if cheapest is not None and o["price"] > cheapest:
+                reasons.append("more_expensive")
+            if nearest is not None and d is not None and d > nearest:
+                reasons.append("farther")
+        if o["shop"]["hours"]["open_now"] is False:
+            reasons.append("closed_now")
+        out.append({"offer_id": o["offer_id"], "shop_id": o["shop"]["id"], "reasons": reasons,
+                    "detail": {"price": o["price"], "updated_days": o["updated_days"],
+                               "distance_m": round(d) if d is not None else None}})
+    return out

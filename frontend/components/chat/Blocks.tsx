@@ -1,14 +1,18 @@
 "use client";
 
+import Link from "next/link";
 import { Fragment, useState } from "react";
+import { recordChoice } from "@/lib/api";
 import { faDigits, money } from "@/lib/format";
 import type { Block, CompareRow, ProductCard } from "@/lib/types";
 import { AttachIcon, ChevronDown, InfoIcon, MapIcon, StoreIcon, WarnIcon } from "../icons";
+import BuyButton from "../BuyButton";
 import { PaymentLogo } from "../PaymentLogo";
 import StoresView from "../stores/StoresView";
 import { useUI } from "../UIContext";
 import BnplStrip, { BnplTag, payLabel } from "./BnplStrip";
 import { useChat } from "./ChatContext";
+import LocationRequest from "./LocationRequest";
 
 export default function BlockView({ block, last }: { block: Block; last: boolean }) {
   switch (block.kind) {
@@ -18,12 +22,18 @@ export default function BlockView({ block, last }: { block: Block; last: boolean
     case "compare": return <CompareTable block={block} />;
     case "summary": return <Summary block={block} />;
     case "stores": return <Stores block={block} />;
+    case "location_request": return <LocationRequest block={block} active={last} />;
     case "payment_options": return <PaymentOptions block={block} />;
     default: return null;
   }
 }
 
-const priceLine = (p: ProductCard) => (p.price.min != null ? <>از {money(p.price.min)} <small className="muted" style={{ fontWeight: 400, fontSize: 12 }}>تومان</small></> : <span className="muted">قیمت ثبت نشده</span>);
+/** Prices are bold, «تومان» the same size and weight as the number. With one seller: its price, no «از». */
+const priceLine = (p: ProductCard) => {
+  const one = p.single_seller?.price;
+  if (one != null) return <>{money(one)} تومان</>;
+  return p.price.min != null ? <>از {money(p.price.min)} تومان</> : <span className="muted">قیمت ثبت نشده</span>;
+};
 const shopsLine = (p: ProductCard) => {
   const n = p.shop_count;
   if (p.bnpl?.seller_count) return `${n > 1 ? `در ${faDigits(n)} فروشگاه` : "یک فروشنده"} با ${payLabel(p.bnpl)}`;
@@ -83,6 +93,46 @@ function QuickReply({ block, active }: { block: Extract<Block, { kind: "quick_re
   );
 }
 
+/** «فروشنده‌ها» opens the sellers list; when only one shop sells it under the user's filter, «خرید» goes
+    straight to that shop: its product + shop page when it has a store, the one seller in the pop-up when online only. */
+function SellersOrBuy({ p, size, variant = "btn-primary" }: {
+  p: Pick<ProductCard, "id" | "single_seller" | "bnpl">; size?: "sm"; variant?: string;
+}) {
+  const { openProduct } = useUI();
+  const cls = `btn ${variant}${size === "sm" ? " btn-sm" : ""}`;
+  const one = p.single_seller;
+  if (one?.in_person) {
+    const pay = p.bnpl?.filter ? `&pay=${encodeURIComponent(p.bnpl.filter)}` : "";
+    return <Link className={cls} href={`/p/${encodeURIComponent(p.id)}?shop=${encodeURIComponent(one.shop_id)}${pay}`}>خرید</Link>;
+  }
+  return (
+    <button className={cls} onClick={() => openProduct(p.id, "sellers", p.bnpl?.filter)}>
+      {one ? "خرید" : "فروشنده‌ها"}
+    </button>
+  );
+}
+
+/** Only one shop sells it (under the user's filter): «خرید از [فروشگاه]», the nearest and the cheapest by definition. */
+function OneSeller({ p }: { p: ProductCard }) {
+  const { openProduct } = useUI();
+  const one = p.single_seller!;
+  const pay = p.bnpl?.filter ? `&pay=${encodeURIComponent(p.bnpl.filter)}` : "";
+  const meta = [one.area, one.open_now == null ? null : one.open_now ? (one.today ?? "باز است") : "الان بسته‌ست"]
+    .filter(Boolean).join(" · ");
+  return (
+    <div className="one-seller">
+      {one.in_person ? (
+        <BuyButton shop={one.shop} price={one.price} tags={{ nearest: true, cheapest: true }}
+          href={`/p/${encodeURIComponent(p.id)}?shop=${encodeURIComponent(one.shop_id)}${pay}`}
+          onClick={() => recordChoice({ product_id: p.id, offer_id: one.offer_id, recommended_offer_id: one.offer_id, context: "chat_card" })} />
+      ) : (
+        <BuyButton shop={one.shop} price={one.price} tags={{ cheapest: true }} onClick={() => openProduct(p.id, "sellers", p.bnpl?.filter)} />
+      )}
+      {meta ? <span className="row-sub">{meta}</span> : null}
+    </div>
+  );
+}
+
 function ProductPick({ block }: { block: Extract<Block, { kind: "products" }> }) {
   const { openProduct, attachToComposer } = useUI();
   return (
@@ -98,14 +148,18 @@ function ProductPick({ block }: { block: Extract<Block, { kind: "products" }> })
                 <dl className="spec-dl">{p.specs.map((s) => <Fragment key={s.key}><dt>{s.key}</dt><dd>{s.value}</dd></Fragment>)}</dl>
               ) : null}
               <div className="pick-foot">
-                <span className="price num">{priceLine(p)} <small className="muted" style={{ fontWeight: 400, fontSize: 12 }}>{shopsLine(p)}</small></span>
+                <span className="num" style={{ display: "flex", flexDirection: "column" }}>
+                  <span className="price-lg">{priceLine(p)}</span>
+                  <small className="muted" style={{ fontWeight: 400, fontSize: 12 }}>{shopsLine(p)}</small>
+                </span>
                 <span style={{ display: "flex", gap: 4 }}>
                   <button className="btn btn-ghost btn-icon" onClick={() => attachToComposer(p)} aria-label={`پرسیدن درباره‌ی ${p.title}`} title="بپرس"><AttachIcon /></button>
-                  {p.bnpl ? null : <button className="btn btn-ghost btn-icon" onClick={() => openProduct(p.id, "map")} aria-label="فروشگاه‌های حضوری" title="حضوری"><MapIcon /></button>}
-                  <button className="btn btn-primary" onClick={() => openProduct(p.id, "sellers", p.bnpl?.filter)}>فروشنده‌ها</button>
+                  {p.bnpl || p.single_seller ? null : <button className="btn btn-ghost btn-icon" onClick={() => openProduct(p.id, "map")} aria-label="فروشگاه‌های حضوری" title="حضوری"><MapIcon /></button>}
+                  {p.single_seller ? null : <SellersOrBuy p={p} />}
                 </span>
               </div>
             </div>
+            {p.single_seller ? <OneSeller p={p} /> : null}
             {p.bnpl ? <BnplStrip p={p} /> : null}
           </div>
           {p.reason ? <p style={{ margin: 0, fontSize: 14, lineHeight: "24px" }}>{p.reason}</p> : null}
@@ -135,9 +189,10 @@ function ProductRow({ block }: { block: Extract<Block, { kind: "products" }> }) 
               </button>
               <div className="p-card-body">
                 <p className="p-card-title">{p.title}</p>
-                <span className="price num" style={{ fontSize: 15 }}>{priceLine(p)}</span>
+                <span className="price num" style={{ fontSize: 15, whiteSpace: "normal" }}>{priceLine(p)}</span>
                 <span className="row-sub">{shopsLine(p)}</span>
                 {p.bnpl ? <BnplTag b={p.bnpl} /> : null}
+                {p.single_seller ? <SellersOrBuy p={p} size="sm" /> : null}
                 <button className="chip" aria-pressed={on} onClick={() => toggle(p.id)} style={{ justifyContent: "center", marginTop: 4 }}>
                   {on ? "انتخاب شد" : "افزودن به مقایسه"}
                 </button>
@@ -196,7 +251,7 @@ function CompareTable({ block }: { block: Extract<Block, { kind: "compare" }> })
             <tr>
               <th scope="row"><span className="sr-only">فروشنده‌ها</span></th>
               {block.products.map((p, i) => (
-                <td key={p.id}><button className={`btn btn-sm ${i === 0 ? "btn-primary" : "btn-secondary"}`} onClick={() => openProduct(p.id)}>فروشنده‌ها</button></td>
+                <td key={p.id}><SellersOrBuy p={p} size="sm" variant={i === 0 ? "btn-primary" : "btn-secondary"} /></td>
               ))}
             </tr>
           </tbody>

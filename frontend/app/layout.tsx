@@ -2,8 +2,8 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "تربچت",
-  description: "مقایسه‌ی قیمت و پیدا کردن فروشگاه با تربچت",
+  title: "تربچه",
+  description: "تربچه، دستیار کنترل ولخرجی‌هات: مقایسه‌ی قیمت و پیدا کردن نزدیک‌ترین و ارزان‌ترین فروشگاه",
   icons: { icon: "/brand/radish.png" },
 };
 

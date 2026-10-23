@@ -1,9 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { Fragment, useEffect, useRef, useState } from "react";
-import { getProduct } from "@/lib/api";
-import { daysAgo, faDigits, money } from "@/lib/format";
+import { getProduct, recordChoice } from "@/lib/api";
+import { daysAgo, faDigits, metersBetween, money } from "@/lib/format";
+import { getSavedLocation } from "@/lib/store";
+import BuyButton from "./BuyButton";
 import type { Offer, ProductCard, ProductDetail } from "@/lib/types";
 import { ChevronDown, CloseIcon, ExternalIcon, PhoneIcon, ShieldIcon, TruckIcon, WarnIcon } from "./icons";
 import { acceptsPay, PaymentLogo } from "./PaymentLogo";
@@ -44,6 +45,17 @@ export default function ProductPopup({ id, initialTab, pay = null, onClose, onAs
   const priced = sellers.filter((o) => o.price != null && !o.outlier);
   const cheapest = priced[0];
   const offers = showAll ? sellers : sellers.slice(0, 6);
+  // The nearest in-person seller, when the user's position is known (for the «نزدیک‌ترین» tag).
+  const [here, setHere] = useState<{ lat: number; lng: number } | null>(null);
+  useEffect(() => {
+    const l = getSavedLocation();
+    if (l?.lat != null && l?.lng != null) setHere({ lat: l.lat, lng: l.lng });
+  }, []);
+  const nearest = here
+    ? sellers.filter((o) => o.shop.lat != null && o.shop.lng != null && o.price != null && !o.outlier)
+        .map((o) => ({ id: o.offer_id, d: metersBetween(here, { lat: o.shop.lat!, lng: o.shop.lng! }) }))
+        .sort((a, b) => a.d - b.d)[0] ?? null
+    : null;
   const minPrice = pay ? cheapest?.price ?? null : p?.price.min ?? null;
   const payLabel = pay === "any" ? "خرید قسطی" : pay;
 
@@ -123,7 +135,12 @@ export default function ProductPopup({ id, initialTab, pay = null, onClose, onAs
 
               {tab === "sellers" ? (
                 <div className="list" style={{ border: "1px solid var(--divider)" }}>
-                  {offers.map((o) => <OfferRow key={o.offer_id} o={o} productId={p.id} onMap={() => setTab("map")} />)}
+                  {offers.map((o) => (
+                    <OfferRow key={o.offer_id} o={o} productId={p.id} onMap={() => setTab("map")}
+                      cheapest={o.offer_id === cheapest?.offer_id} nearestM={nearest?.id === o.offer_id ? nearest.d : null}
+                      onBuy={() => recordChoice({ product_id: p.id, offer_id: o.offer_id, recommended_offer_id: cheapest?.offer_id ?? null,
+                        lat: here?.lat ?? null, lng: here?.lng ?? null, context: "sellers" })} />
+                  ))}
                   {sellers.length === 0 ? <p className="muted" style={{ margin: 0, padding: 14 }}>هیچ فروشنده‌ی این کالا {payLabel} نداره.</p> : null}
                   {sellers.length > 6 && !showAll ? (
                     <button className="btn btn-ghost" style={{ borderRadius: 0 }} onClick={() => setShowAll(true)}>
@@ -164,24 +181,29 @@ export default function ProductPopup({ id, initialTab, pay = null, onClose, onAs
   );
 }
 
-function OfferRow({ o, productId, onMap }: { o: Offer; productId: string; onMap: () => void }) {
+/** One seller: where and how fresh, then «خرید از [فروشگاه]» (red for the cheapest, white for the rest). In-person
+    shops open their product + shop page; online-only shops open their website. */
+function OfferRow({ o, productId, onMap, cheapest, nearestM, onBuy }: {
+  o: Offer; productId: string; onMap: () => void; cheapest: boolean; nearestM: number | null; onBuy: () => void;
+}) {
   const [showPhone, setShowPhone] = useState(false);
   const s = o.shop;
+  const site = s.website ? (s.website.startsWith("http") ? s.website : `https://${s.website}`) : null;
+  const inPerson = s.lat != null && s.lng != null;
+  const meta = [s.area ? `${s.area}، تهران` : inPerson ? "تهران" : "فقط آنلاین", s.hours.today, o.updated_days != null ? `قیمت ${daysAgo(o.updated_days)}` : null]
+    .filter(Boolean).join(" · ");
+  const tags = { cheapest, nearest: nearestM != null, distanceM: nearestM };
   return (
     <div className="offer">
-      <div className="offer-top">
-        <div className="row-main">
-          <b>{s.name}</b>
-          <span className="row-sub">
-            {s.area ? `${s.area}، تهران` : "تهران"}
-            {s.hours.today ? ` · ${s.hours.today}` : ""}
-          </span>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
-          <span className="price num">{o.price != null ? money(o.price) : "تماس بگیرید"}</span>
-          {o.updated_days != null ? <span className="row-sub">قیمت {daysAgo(o.updated_days)}</span> : null}
-        </div>
-      </div>
+      <span className="row-sub">{meta}</span>
+      {inPerson ? (
+        <BuyButton shop={s.name} price={o.price} tags={tags} variant={cheapest ? "primary" : "secondary"}
+          href={`/p/${encodeURIComponent(productId)}?shop=${encodeURIComponent(s.id)}`} onClick={onBuy} />
+      ) : site ? (
+        <BuyButton shop={s.name} price={o.price} tags={tags} variant={cheapest ? "primary" : "secondary"} href={site} external note="سایت فروشگاه" onClick={onBuy} />
+      ) : (
+        <BuyButton shop={s.name} price={o.price} tags={tags} variant={cheapest ? "primary" : "secondary"} onClick={() => setShowPhone(true)} note="تماس بگیر" />
+      )}
       <div className="offer-badges">
         {o.outlier ? <span className="badge badge-warn"><WarnIcon className="icon-sm" />قیمت غیرعادی</span> : null}
         {o.warranty ? <span className="badge badge-plain"><ShieldIcon className="icon-sm" />{o.warranty}</span> : null}
@@ -197,12 +219,7 @@ function OfferRow({ o, productId, onMap }: { o: Offer; productId: string; onMap:
             <button className="btn btn-secondary btn-sm" onClick={() => setShowPhone(true)}><PhoneIcon className="icon-sm" />شماره تماس</button>
           )
         ) : null}
-        {s.lat != null ? (
-          <Link className="btn btn-primary btn-sm" href={`/p/${encodeURIComponent(productId)}?shop=${encodeURIComponent(s.id)}`}>
-            {s.hours.open_now ? "انتخاب و استعلام" : "انتخاب فروشگاه"}
-          </Link>
-        ) : null}
-        {s.lat != null ? <button className="btn btn-ghost btn-sm" onClick={onMap}>روی نقشه</button> : null}
+        {inPerson ? <button className="btn btn-ghost btn-sm" onClick={onMap}>روی نقشه</button> : null}
       </div>
     </div>
   );

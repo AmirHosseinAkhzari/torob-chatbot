@@ -17,7 +17,7 @@ from .config import settings
 
 log = logging.getLogger("uvicorn.error")
 
-SYSTEM_PROMPT = """You are تربچت, Torob's shopping chat. You help people in Iran find products, compare them and find the shops that sell them. You answer ONLY from the Torob knowledge graph, through your tools.
+SYSTEM_PROMPT = """You are تربچه («تربچه، دستیار کنترل ولخرجی‌هات»), Torob's shopping chat. You help people in Iran find products, compare them and find the shops that sell them. You answer ONLY from the Torob knowledge graph, through your tools.
 
 What the data is
 - Every shop is a physical store in Tehran (30 neighborhoods such as فردوسی، شیخ هادی، بهارستان). Many also deliver. There is no data for other cities: say so if asked.
@@ -32,13 +32,14 @@ How to work
    When the user attached products, start from get_product_details for them and show them with show_products (style "pick") unless you show a comparison instead.
 2. Titles are often written with English model names (گوشی سامسونگ A26, not آ۲۶). Search with the product type plus brand and model, and try another wording if the first search finds nothing useful.
 3. If the request is too vague to search well (no product type, or "a good phone" with no budget or use), call ask_quick_reply with 3 to 6 short tappable options, then stop.
+   If the answer depends on where the user is (buying in person, the nearest or a nearby shop, "near me", how far a shop is) and their location is not known, call ask_location with a one-line reason, then stop: the app asks for it and sends the question again with the location. Don't call it when the location is known or the user named a neighborhood themselves.
 4. If you had to assume something (budget unit, what a word means), call show_understood first with the conditions you used and mark the assumptions.
 5. Every product you recommend or name must also appear as a component in the same answer (show_products, show_comparison or show_summary). Never answer with product names in text only. Show products with components, not lists in text:
    - show_products, style "pick": 1 to 3 recommendations, each with a one-line reason and, when something is unknown or risky, a caveat.
    - show_products, style "row": 4 to 8 alternatives.
    - show_comparison: when the user compares, or is choosing between 2 to 4 models.
    - show_summary: at the end of an answer that weighed several options.
-   - show_stores: when the user wants to buy in person, asks where, or asks what is near them. When the user's location is known its result has recommended_shop: the app already picked that shop for them (near, with a price close to the cheapest) and offers directions and Snapp. Name it in one sentence with why; don't list the other shops.
+   - show_stores: when the user wants to buy in person, asks where, or asks what is near them. When the user's location is known its result has recommended_shop (nearest and/or cheapest near them, or cheapest in Tehran) and alternatives: the app already shows that shop with directions and Snapp. Name it in one sentence with why; don't list the other shops.
    Call get_product_details before you state warranty, seller, delivery or payment facts about a product.
 6. Credit and installments (BNPL). The installment providers are ترب‌پی، اسنپ‌پی، دیجی پی، تارا، ازکی‌وام (any spelling, e.g. «اسنپ پی», «ازکی وام»); a shop's own plan is not one of them. The words are فروش اعتباری، خرید قسطی، پرداخت اقساطی، اقساط، BNPL، «الان بخر بعدا پرداخت کن».
    - When the user wants to buy something on credit, search_products with installment ('any', or the provider they named). Only shops that accept it count: the results' prices, shop counts and sellers already cover only those shops.
@@ -105,6 +106,15 @@ TOOLS: list[dict[str, Any]] = [
                 "multi_select": {"type": "boolean"},
             },
             "required": ["question", "options"],
+        },
+    },
+    {
+        "type": "function", "name": "ask_location",
+        "description": "Ask the user for their location (GPS or a Tehran neighborhood) before answering a question that depends on it. Ends your turn.",
+        "parameters": {
+            "type": "object",
+            "properties": {"reason": {"type": "string", "description": "One short colloquial Persian sentence: why you need it."}},
+            "required": ["reason"],
         },
     },
     {
@@ -257,6 +267,18 @@ class Turn:
         return {"type": "sources", "searches": self.searches, "items": list(self.sources.values())[:30]}
 
 
+def _single_seller(product: dict) -> dict | None:
+    """The one shop selling a product (from get_product's offers), or None when there are several."""
+    offers = product.get("offers") or []
+    if len({o["shop"]["id"] for o in offers}) != 1:
+        return None
+    o = offers[0]
+    sh = o["shop"]
+    return {"shop_id": sh["id"], "offer_id": o["offer_id"], "in_person": sh["lat"] is not None, "shop": sh["name"],
+            "area": sh["area"], "price": o["price"], "open_now": sh["hours"]["open_now"], "today": sh["hours"]["today"],
+            "distance_m": None}
+
+
 async def _call(fn, *args, **kwargs):
     return await asyncio.to_thread(fn, *args, **kwargs)
 
@@ -342,6 +364,15 @@ async def _execute(name: str, args: dict, turn: Turn) -> AsyncIterator[dict | tu
         yield ("result", {"shown": True, "note": "Wait for the user's choice."})
         return
 
+    if name == "ask_location":
+        if turn.location and (turn.location.get("lat") is not None or turn.location.get("area")):
+            yield ("result", {"error": "The location is already known; use it."})
+            return
+        yield {"type": "block", "block": {"kind": "location_request", "reason": args.get("reason") or "برای پیدا کردن نزدیک‌ترین فروشگاه، موقعیتت رو لازم دارم."}}
+        turn.stop = True
+        yield ("result", {"shown": True, "note": "Wait: the app asks for the location and sends the question again."})
+        return
+
     if name == "show_products":
         items = args.get("items") or []
         ids = [i.get("product_id") for i in items if i.get("product_id")]
@@ -349,6 +380,8 @@ async def _execute(name: str, args: dict, turn: Turn) -> AsyncIterator[dict | tu
         pay = repo.canonical_provider(args.get("installment")) or turn.pay
         if pay and cards:
             await _call(repo.apply_bnpl, list(cards.values()), pay, turn.location)
+        if cards:
+            await _call(repo.mark_single_seller, list(cards.values()))
         out = []
         for i in items:
             c = cards.get(i.get("product_id"))
@@ -399,7 +432,8 @@ async def _execute(name: str, args: dict, turn: Turn) -> AsyncIterator[dict | tu
             rows.append({"label": "گارانتی رایج", "type": "text", "values": warranties, "best": None})
         yield {"type": "block", "block": {
             "kind": "compare", "heading": args.get("heading"),
-            "products": [{"id": p["id"], "title": p["title"], "image": p["image"], "price": p["price"], "shop_count": p["shop_count"]} for p in products],
+            "products": [{"id": p["id"], "title": p["title"], "image": p["image"], "price": p["price"], "shop_count": p["shop_count"],
+                          "single_seller": _single_seller(p)} for p in products],
             "rows": rows,
         }}
         yield ("result", {"shown": True, "rows": [r["label"] for r in rows]})
@@ -435,16 +469,32 @@ async def _execute(name: str, args: dict, turn: Turn) -> AsyncIterator[dict | tu
         loc = turn.location or {}
         if loc.get("lat") is not None or loc.get("area"):
             r = await _call(repo.stores_for_product, cards[0]["id"], loc.get("lat"), loc.get("lng"), loc.get("area"))
-            pick = r and r["pick"]
-            if pick:
-                st = next(x for x in r["stores"] if x["offer_id"] == pick["offer_id"])
-                result = {"shown": True, "note": "The map opens with this shop picked for the user.", "recommended_shop": {
-                    "shop": st["shop"]["name"], "area": st["shop"]["area"], "price": st["price"],
-                    "above_cheapest_percent": pick["price_gap_pct"], "open_now": pick["open_now"], "warranty": pick["warranty"],
-                    **({"distance_km": round(pick["distance_m"] / 1000, 1)} if pick["distance_m"] is not None else {"in_user_area": pick["in_area"]}),
-                }}
+            if r:
+                r.pop("_left_out", None)  # store insights are saved when the user's map loads, not here
+            rec = r and r.get("recommendation")
+            if rec:
+                by_id = {x["offer_id"]: x for x in r["stores"]}
+                def describe(o):
+                    st = by_id[o["offer_id"]]
+                    d = {"shop": st["shop"]["name"], "area": st["shop"]["area"], "price": st["price"],
+                         "open_now": st["shop"]["hours"]["open_now"], "roles": o["roles"],
+                         "price_updated_days_ago": st["updated_days"], "stock_confirmed_by_phone": o["verified"]}
+                    if o["distance_m"] is not None:
+                        d["distance_km"] = round(o["distance_m"] / 1000, 1)
+                    return d
+                result = {
+                    "shown": True,
+                    "note": ("The app shows ONE recommended shop, with the other advantage (nearer or cheaper) as a "
+                             "one-line alternative, and hides the rest behind «دیدن فروشگاه‌های دیگه». Name the "
+                             "recommended shop in one sentence with why (near / cheapest); mention the alternative "
+                             "only if it is a different shop. Don't list other shops."),
+                    "user_neighborhood": rec["neighborhood"],
+                    "recommended_shop": describe(next(o for o in rec["options"] if o["primary"])),
+                    "alternatives": [describe(o) for o in rec["options"] if not o["primary"]],
+                }
             else:
-                result["note"] = "No shop is both near the user and close to the cheapest price; the map lists them all."
+                result["note"] = ("No shop has a recent, reliable price for this product; the app shows no "
+                                  "recommendation. Suggest calling the shop before going.")
         yield ("result", result)
         return
 
@@ -456,6 +506,8 @@ def _context_note(attachments: list[dict], location: dict | None) -> str | None:
     if attachments:
         lines.append("The user attached these products to the message; answer about exactly these:")
         lines += [f"- {_memo_line(a)}" for a in attachments]
+    if not location or (location.get("lat") is None and not location.get("area")):
+        lines.append("The user's location is not known yet.")
     if location:
         if location.get("area"):
             lines.append(f"The user is in the Tehran neighborhood {location['area']}.")
@@ -538,6 +590,8 @@ async def run_turn(history: list[dict], message: str, attachment_ids: list[str],
             if turn.pay:
                 await _call(repo.apply_bnpl, extra, turn.pay, turn.location)
             cards += extra
+        if cards:
+            await _call(repo.mark_single_seller, cards)
         for c in cards:
             turn.shown[c["id"]] = c
         if cards:

@@ -94,7 +94,7 @@ export default function ChatPage() {
           ctrl.signal,
         );
       } catch (err) {
-        if ((err as Error).name !== "AbortError") update({ type: "error", message: "به سرور تربچت وصل نشدم. بک‌اند رو بررسی کن و دوباره بفرست." });
+        if ((err as Error).name !== "AbortError") update({ type: "error", message: "به سرور تربچه وصل نشدم. بک‌اند رو بررسی کن و دوباره بفرست." });
       } finally {
         const cur = convRef.current!;
         const last = cur.messages.find((m) => m.id === assistant.id) as Assistant | undefined;
@@ -109,15 +109,18 @@ export default function ChatPage() {
   useEffect(() => {
     if (started.current === id) return;
     started.current = id;
-    const existing = getConversation(id) ?? { id, title: "", createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
-    // An answer cut off by a reload is closed so the page never shows it as still running.
-    const fixed = {
-      ...existing,
-      messages: existing.messages.map((m) => (m.role === "assistant" && !m.done ? { ...m, done: true, error: m.parts.length ? null : "پاسخ کامل نشد." } : m)),
-    };
-    commit(fixed);
-    const pending = takePending(id);
-    if (pending) send(pending.text, pending.attachments);
+    (async () => {
+      const pending = takePending(id);
+      // A new chat starts here; an old one comes from the account.
+      const existing = (pending ? null : await getConversation(id)) ?? { id, title: "", createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
+      // An answer cut off by a reload is closed so the page never shows it as still running.
+      const fixed = {
+        ...existing,
+        messages: existing.messages.map((m) => (m.role === "assistant" && !m.done ? { ...m, done: true, error: m.parts.length ? null : "پاسخ کامل نشد." } : m)),
+      };
+      commit(fixed);
+      if (pending) send(pending.text, pending.attachments);
+    })();
   }, [id, commit, send]);
 
   // Follow the answer while it streams, unless the reader scrolled up.

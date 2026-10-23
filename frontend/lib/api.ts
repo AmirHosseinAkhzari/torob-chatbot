@@ -1,15 +1,35 @@
-import type { Area, Inquiry, LiveResult, ProductDetail, StoresResponse, UserLocation } from "./types";
+import { getSession, saveSession, type Settings } from "./session";
+import type { Area, Conversation, Inquiry, ProductDetail, StoresResponse, UserLocation } from "./types";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, { signal });
-  if (!res.ok) throw new Error(`${res.status} ${path}`);
-  return res.json() as Promise<T>;
+/** Every request carries the login token. A 401 means the session ended: forget it and go to /login. */
+function headers(json = false): HeadersInit {
+  const h: Record<string, string> = {};
+  if (json) h["Content-Type"] = "application/json";
+  const s = typeof window !== "undefined" ? getSession() : null;
+  if (s?.token) h.Authorization = `Bearer ${s.token}`;
+  return h;
 }
 
-export const liveSearch = (q: string, signal?: AbortSignal) =>
-  get<LiveResult>(`/api/search/live?q=${encodeURIComponent(q)}`, signal);
+function onUnauthorized() {
+  if (typeof window === "undefined") return;
+  saveSession(null);
+  if (!location.pathname.startsWith("/login")) location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+}
+
+async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method, signal, headers: headers(body !== undefined), body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401 && !path.startsWith("/api/auth/")) onUnauthorized();
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(typeof data?.detail === "string" ? data.detail : "مشکلی پیش اومد. دوباره امتحان کن.");
+  return data as T;
+}
+
+const get = <T,>(path: string, signal?: AbortSignal) => request<T>("GET", path, undefined, signal);
+const post = <T,>(path: string, body: unknown) => request<T>("POST", path, body);
 
 export const getProduct = (id: string, signal?: AbortSignal) =>
   get<ProductDetail>(`/api/products/${encodeURIComponent(id)}`, signal);
@@ -27,16 +47,8 @@ export const getStores = (id: string, loc: UserLocation | null, pay?: string | n
   return get<StoresResponse>(`/api/products/${encodeURIComponent(id)}/stores?${params}`, signal);
 };
 
-export async function startInquiry(body: { product_id: string; shop_id: string; phone: string }): Promise<Inquiry> {
-  const res = await fetch(`${API_URL}/api/inquiries`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(typeof data?.detail === "string" ? data.detail : "استعلام شروع نشد. دوباره امتحان کن.");
-  return data as Inquiry;
-}
+/** استعلام دستگاه: the result is texted to the account's phone. */
+export const startInquiry = (body: { product_id: string; shop_id: string }) => post<Inquiry>("/api/inquiries", body);
 
 export const getInquiry = (id: string, signal?: AbortSignal) => get<Inquiry>(`/api/inquiries/${encodeURIComponent(id)}`, signal);
 
@@ -56,12 +68,8 @@ export async function streamChat(
   onEvent: (e: ChatEvent) => void,
   signal: AbortSignal,
 ) {
-  const res = await fetch(`${API_URL}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-  });
+  const res = await fetch(`${API_URL}/api/chat`, { method: "POST", headers: headers(true), body: JSON.stringify(body), signal });
+  if (res.status === 401) onUnauthorized();
   if (!res.ok || !res.body) throw new Error(`chat ${res.status}`);
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -86,3 +94,26 @@ export async function streamChat(
     }
   }
 }
+
+/* Login with a one-time code by SMS. dev_code comes back only while the backend's SMS sending is off. */
+export const requestOtp = (phone: string) =>
+  post<{ sent: boolean; resend_after: number; ttl: number; dev_code?: string }>("/api/auth/otp/request", { phone });
+
+export const verifyOtp = (phone: string, code: string) =>
+  post<{ token: string; phone: string; settings: Settings }>("/api/auth/otp/verify", { phone, code });
+
+export const getMe = () => get<{ phone: string; settings: Settings }>("/api/me");
+export const putSettings = (s: Settings) => request<{ settings: Settings }>("PUT", "/api/me/settings", s);
+export const logout = () => post<{ ok: boolean }>("/api/auth/logout", {}).catch(() => null);
+
+/* Chat history on the account. */
+export const listConversations = () => get<{ conversations: Conversation[] }>("/api/conversations");
+export const fetchConversation = (id: string) => get<Conversation>(`/api/conversations/${encodeURIComponent(id)}`);
+export const putConversation = (c: Conversation) => request<{ ok: boolean }>("PUT", `/api/conversations/${encodeURIComponent(c.id)}`, c);
+export const deleteConversation = (id: string) => request<{ ok: boolean }>("DELETE", `/api/conversations/${encodeURIComponent(id)}`);
+
+/* Store insights: where the user chose to buy (and why, when they say). Saved only. */
+export const recordChoice = (body: {
+  product_id: string; offer_id: string; recommended_offer_id?: string | null; lat?: number | null; lng?: number | null;
+  user_said?: string | null; context?: string;
+}) => post<{ saved: boolean }>("/api/store-events/choice", body).catch(() => null);

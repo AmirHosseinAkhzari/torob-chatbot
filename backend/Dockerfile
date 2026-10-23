@@ -1,4 +1,4 @@
-# Liara's mirrors (liara.json builds in Iran, where servers outside Iran are slow). Local builds can pass
+# Liara's mirrors (the Germany build reached deb.debian.org slowly; these worked). Local builds can pass
 # --build-arg DEBIAN_MIRROR=http://deb.debian.org --build-arg PIP_INDEX_URL=https://pypi.org/simple
 ARG DEBIAN_MIRROR=http://linux-mirror.liara.ir/repository
 ARG PIP_INDEX_URL=https://package-mirror.liara.ir/repository/pypi/simple

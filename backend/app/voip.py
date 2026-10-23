@@ -89,6 +89,8 @@ class Call:
         self.end_reason: str | None = None
         self.answered_at: float | None = None
         self.log_tail: list[str] = []
+        self.keys_seen: list[str] = []   # e.g. ["1 rfc2833"]
+        self.stats: str | None = None    # audio packet counts from callctl
         self._reader: asyncio.Task | None = None
 
     async def __aenter__(self):
@@ -117,8 +119,15 @@ class Call:
         except Exception:
             if self.proc and self.proc.returncode is None:
                 self.proc.kill()
-        if self._reader:
+        if self._reader:  # let it read the last lines (STATS) before the helper's output closes
+            try:
+                await asyncio.wait_for(asyncio.shield(self._reader), timeout=2)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
             self._reader.cancel()
+        if self.answered_at:  # what reached us: no audio packets means no RFC 2833 keys either
+            log.info("call ended (%s): audio %s, keys %s", self.end_reason or "hung up", self.stats or "no stats",
+                     self.keys_seen or "none")
         shutil.rmtree(self.work, ignore_errors=True)
         _line.release()
         return False
@@ -137,6 +146,9 @@ class Call:
             self.log_tail = (self.log_tail + [line])[-40:]
             if line.startswith("DTMF "):
                 self.keys_q.put_nowait(line[5:6])
+                self.keys_seen.append(line[5:])
+            elif line.startswith("STATS "):
+                self.stats = line[6:]
             elif line == "PLAYEND":
                 self.playend.set()
             elif line == "MEDIA":

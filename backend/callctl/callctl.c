@@ -13,7 +13,8 @@
  *                      HANGUP            hang up and exit
  * Events on stdout:    STATE <CALLING|EARLY|CONNECTING|CONFIRMED>
  *                      MEDIA             audio is flowing (clips can be played)
- *                      DTMF <digit>      a key pressed by the other side (RFC 2833 or SIP INFO)
+ *                      DTMF <digit> <rfc2833|info>  a key pressed by the other side, and how it came
+ *                      STATS rx_pkt=<n> tx_pkt=<n> rx_lost=<n>  audio packets, when the call's audio ends
  *                      PLAYEND           the clip finished
  *                      DISCONNECTED <code> <reason>
  *                      ERROR <text>
@@ -65,7 +66,16 @@ static void on_call_media_state(pjsua_call_id call_id) {
 
 static void on_dtmf_digit2(pjsua_call_id call_id, const pjsua_dtmf_info *info) {
     PJ_UNUSED_ARG(call_id);
-    emit("DTMF %c", (char)info->digit);
+    emit("DTMF %c %s", (char)info->digit, info->method == PJSUA_DTMF_METHOD_SIP_INFO ? "info" : "rfc2833");
+}
+
+/* Audio packet counts: rx_pkt=0 means no audio (and no RFC 2833 keys) reached us. */
+static void on_stream_destroyed(pjsua_call_id call_id, pjmedia_stream *strm, unsigned stream_idx) {
+    pjmedia_rtcp_stat st;
+    PJ_UNUSED_ARG(call_id);
+    PJ_UNUSED_ARG(stream_idx);
+    if (pjmedia_stream_get_stat(strm, &st) == PJ_SUCCESS)
+        emit("STATS rx_pkt=%u tx_pkt=%u rx_lost=%u", st.rx.pkt, st.tx.pkt, st.rx.loss);
 }
 
 static void on_player_eof(pjmedia_port *port, void *user_data) {
@@ -191,6 +201,7 @@ int main(int argc, char **argv) {
     cfg.cb.on_call_state = &on_call_state;
     cfg.cb.on_call_media_state = &on_call_media_state;
     cfg.cb.on_dtmf_digit2 = &on_dtmf_digit2;
+    cfg.cb.on_stream_destroyed = &on_stream_destroyed;
     cfg.cb.on_transport_state = &on_transport_state;
     cfg.max_calls = 1;
     pjsua_logging_config_default(&log_cfg);
@@ -255,6 +266,9 @@ int main(int argc, char **argv) {
         acfg.proxy[0] = pj_str(proxy);
     }
     acfg.reg_timeout = 3600;
+    /* Behind NAT (Liara): offer the public address the server saw (Via received/rport) for the audio,
+     * not the private one, so the server can send audio and RFC 2833 keys back. */
+    acfg.allow_sdp_nat_rewrite = PJ_TRUE;
     if (!strcmp(c.srtp, "optional")) acfg.use_srtp = PJMEDIA_SRTP_OPTIONAL;
     else if (!strcmp(c.srtp, "mandatory")) acfg.use_srtp = PJMEDIA_SRTP_MANDATORY;
     else acfg.use_srtp = PJMEDIA_SRTP_DISABLED;

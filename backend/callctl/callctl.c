@@ -6,6 +6,8 @@
  * Config file (one "key value" per line): server, user, password, and optionally
  *   transport udp|tcp|tls (default udp), port (default 5060, 5061 for tls), ca <CA bundle for tls>,
  *   stun <host:port> (public address for the audio), srtp off|optional|mandatory (default off).
+ * Over tcp/tls everything goes through the server as outbound proxy (like call.sh: --proxy <server>;lr),
+ * and with tls, SRTP needs the TLS signalling (--srtp-secure 1).
  * Commands on stdin:   PLAY <wav path>   play a clip into the call once (replaces the one playing)
  *                      STOP              stop the clip
  *                      HANGUP            hang up and exit
@@ -162,7 +164,7 @@ static int read_config(const char *path, config_t *c) {
 
 int main(int argc, char **argv) {
     config_t c;
-    char id[900], reg[900], line[1024], uri_tail[32];
+    char id[900], reg[900], proxy[960], line[1024], uri_tail[32];
     const char *logfile = getenv("CALLCTL_LOG");
     pjsip_transport_type_e tp;
     pjsua_config cfg;
@@ -247,10 +249,16 @@ int main(int argc, char **argv) {
     acfg.cred_info[0].username = pj_str(c.user);
     acfg.cred_info[0].data_type = PJSIP_CRED_DATA_PLAIN_PASSWD;
     acfg.cred_info[0].data = pj_str(c.pass);
+    if (tp != PJSIP_TRANSPORT_UDP) {   /* sign-in and calls through the server: --proxy sip:server:port;transport=x;lr */
+        snprintf(proxy, sizeof proxy, "%s;lr", reg);
+        acfg.proxy_cnt = 1;
+        acfg.proxy[0] = pj_str(proxy);
+    }
+    acfg.reg_timeout = 3600;
     if (!strcmp(c.srtp, "optional")) acfg.use_srtp = PJMEDIA_SRTP_OPTIONAL;
     else if (!strcmp(c.srtp, "mandatory")) acfg.use_srtp = PJMEDIA_SRTP_MANDATORY;
     else acfg.use_srtp = PJMEDIA_SRTP_DISABLED;
-    acfg.srtp_secure_signaling = 0;
+    acfg.srtp_secure_signaling = (tp == PJSIP_TRANSPORT_TLS) ? 1 : 0;
     if (pjsua_acc_add(&acfg, PJ_TRUE, &acc_id) != PJ_SUCCESS) { emit("ERROR account"); return 1; }
 
     dst = pj_str(argv[2]);

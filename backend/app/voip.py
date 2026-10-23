@@ -20,11 +20,12 @@ log = logging.getLogger("torob-chat.voip")
 SIP_SERVER = os.environ.get("VOIP_SERVER", "voip.asiatech.ir")
 SIP_USER = os.environ.get("VOIP_USER", "")
 SIP_PASSWORD = os.environ.get("VOIP_PASSWORD", "")
-# udp, tcp or tls. Liara lets no SIP out over UDP, so the deployed backend uses tls (Navaphone: port 5061).
+# udp, tcp or tls. Navaphone is TLS only (port 5061), and Liara lets no SIP out over UDP anyway.
 SIP_TRANSPORT = os.environ.get("VOIP_TRANSPORT", "udp").strip().lower()
 SIP_PORT = int(os.environ.get("VOIP_PORT") or (5061 if SIP_TRANSPORT == "tls" else 5060))
 SIP_STUN = os.environ.get("VOIP_STUN", "").strip()        # host:port, for the public audio address behind NAT
-SIP_SRTP = os.environ.get("VOIP_SRTP", "off").strip().lower()  # off | optional | mandatory
+# off | optional | mandatory. Over tls, encrypted audio is offered like call.sh (--use-srtp 1).
+SIP_SRTP = (os.environ.get("VOIP_SRTP") or ("optional" if SIP_TRANSPORT == "tls" else "off")).strip().lower()
 CALLCTL = os.environ.get("CALLCTL_BIN") or str(Path(__file__).resolve().parents[1] / "callctl" / "callctl")
 
 RING_TIMEOUT = 45  # seconds to wait for an answer
@@ -48,8 +49,9 @@ def dial_uri(number: str) -> str:
         digits = "0" + digits[2:]
     elif not digits.startswith("0"):
         digits = "0" + digits
-    tail = f";transport={SIP_TRANSPORT}" if SIP_TRANSPORT in ("tcp", "tls") else ""
-    return f"sip:{digits}@{SIP_SERVER}:{SIP_PORT}{tail}"
+    if SIP_TRANSPORT in ("tcp", "tls"):  # the call goes through the server as outbound proxy (callctl)
+        return f"sip:{digits}@{SIP_SERVER}"
+    return f"sip:{digits}@{SIP_SERVER}:{SIP_PORT}"
 
 
 def _ca_bundle() -> str:

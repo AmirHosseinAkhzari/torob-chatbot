@@ -29,6 +29,8 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
 }
 
 const get = <T,>(path: string, signal?: AbortSignal) => request<T>("GET", path, undefined, signal);
+/** For the admin and store panels (lib/panel.ts). */
+export const apiRequest = request;
 const post = <T,>(path: string, body: unknown) => request<T>("POST", path, body);
 
 export const getProduct = (id: string, signal?: AbortSignal) =>
@@ -102,7 +104,8 @@ export const requestOtp = (phone: string) =>
 export const verifyOtp = (phone: string, code: string) =>
   post<{ token: string; phone: string; settings: Settings }>("/api/auth/otp/verify", { phone, code });
 
-export const getMe = () => get<{ phone: string; settings: Settings }>("/api/me");
+export type Roles = { admin: boolean; shops: { id: string; name: string; area: string | null }[] };
+export const getMe = () => get<{ phone: string; settings: Settings; roles?: Roles }>("/api/me");
 export const putSettings = (s: Settings) => request<{ settings: Settings }>("PUT", "/api/me/settings", s);
 export const logout = () => post<{ ok: boolean }>("/api/auth/logout", {}).catch(() => null);
 

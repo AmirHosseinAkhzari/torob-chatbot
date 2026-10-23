@@ -3,12 +3,12 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { getMe, logout } from "@/lib/api";
+import { getMe, logout, type Roles } from "@/lib/api";
 import { faDigits } from "@/lib/format";
 import { getSession, saveSession, useConversations, useSession, type Session } from "@/lib/store";
 import { applyTheme, currentTheme, cycleTheme, THEME_EVENT, THEME_LABEL, type Theme } from "@/lib/theme";
 import type { Conversation } from "@/lib/types";
-import { CloseIcon, HistoryIcon, MenuIcon, PanelIcon, PlusIcon, SunMoonIcon, UserIcon } from "./icons";
+import { CloseIcon, GridIcon, HistoryIcon, MenuIcon, PanelIcon, PlusIcon, StoreIcon, SunMoonIcon, UserIcon } from "./icons";
 import { UIProvider } from "./UIContext";
 
 function groupLabel(ts: number) {
@@ -52,13 +52,19 @@ function ConversationList({ list, currentId, onNavigate }: { list: Conversation[
 
 /** The signed-in number in the sidebar, with a way out. */
 function Account({ session }: { session: Session | null }) {
+  const [roles, setRoles] = useState<Roles | null>(null);
+  useEffect(() => { if (session) getMe().then((m) => setRoles(m.roles ?? null)).catch(() => {}); }, [session?.token]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!session) return null;
   return (
+    <>
+    {roles?.admin ? <Link className="btn btn-ghost" href="/admin" style={{ justifyContent: "flex-start" }}><GridIcon />پنل مدیریت</Link> : null}
+    {roles?.shops.length ? <Link className="btn btn-ghost" href="/store" style={{ justifyContent: "flex-start" }}><StoreIcon />پنل فروشگاه</Link> : null}
     <div className="side-account">
       <UserIcon />
       <span className="num" dir="ltr">{faDigits(session.phone)}</span>
       <button className="btn btn-ghost btn-sm" onClick={() => { logout(); saveSession(null); location.href = "/login"; }}>خروج</button>
     </div>
+    </>
   );
 }
 

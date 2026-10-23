@@ -1,21 +1,20 @@
 "use client";
 
+import { useState } from "react";
 import type { Offer } from "@/lib/types";
 import BuyButton, { type BuyTags } from "../BuyButton";
 import { daysAgo, distance, faDigits, priceGap, toLatinDigits } from "@/lib/format";
-import { useIsTouchDevice } from "@/lib/useMedia";
-import { ClockIcon, GlobeIcon, InstagramIcon, NavigateIcon, PhoneIcon, PinIcon, ShieldIcon, TruckIcon } from "../icons";
+import { ClockIcon, GlobeIcon, InstagramIcon, PhoneIcon, PinIcon, ShieldIcon, TruckIcon } from "../icons";
 import { PaymentChips } from "../PaymentLogo";
 import InquiryButton from "./InquiryButton";
-import SnappButton from "./SnappButton";
+import RoutePanel from "./RoutePanel";
 
-/** hideRoute: directions and Snapp are offered elsewhere for this shop.
-    selectHref: in the chat, the buy button opens the product + shop page (where the inquiry is); on that page
-    it starts directions to the shop instead.
+/** selectHref: in the chat, the buy button opens the product + shop page (where the inquiry is). On that page
+    pressing it swaps the button for the route panel: the map apps and Snapp.
     tags: why this shop (نزدیک‌ترین / ارزان‌ترین), shown on the buy button. */
 type Props = {
   offer: Offer; productId: string; productTitle: string; productImage: string | null; cheapest: number | null;
-  hideRoute?: boolean; selectHref?: string; tags?: BuyTags;
+  selectHref?: string; tags?: BuyTags;
   /** Called when «خرید از …» is pressed (store insights). */
   onBuy?: () => void;
 };
@@ -33,10 +32,29 @@ export function ShopAvatar({ name, logo, size = 48 }: { name: string; logo?: str
   );
 }
 
-/** Store details sheet: header, product strip, info rows, actions, payment methods.
-    Phones get directions (geo: intent) and Snapp; desktop gets call, Instagram and website only. */
-export default function StoreCard({ offer, productId, productTitle, productImage, cheapest, hideRoute, selectHref, tags, onBuy }: Props) {
-  const touch = useIsTouchDevice();
+/** Not confirmed yet: say what the shop is being asked, never show it as confirmed. */
+function VerifyNote({ offer }: { offer: Offer }) {
+  const need = offer.needs_confirmation ?? [];
+  if (!need.length) return null;
+  const closed = need.includes("store_closed");
+  const stale = need.includes("stale_price") || need.includes("no_price");
+  const stock = need.includes("stock_unknown");
+  const asked = !!offer.verification;
+  const what = stale && stock ? "قیمت امروز و موجودی" : stale ? "قیمت امروز" : stock ? "موجودی" : "قیمت و موجودی";
+  const text = closed
+    ? `${offer.shop.name} الان بسته‌ست؛ ${asked ? "درخواستت ثبت شد و " : ""}وقتی باز شد ${what} رو تأیید می‌کنه.`
+    : `${stale ? "قیمت ثبت‌شده قدیمیه. " : ""}${asked ? `از فروشگاه ${what} رو پرسیدیم؛ جوابش رو برات پیامک می‌کنیم.` : `${what} هنوز تأیید نشده؛ قبل از رفتن بپرس.`}`;
+  return (
+    <div className={`verify-note ${closed ? "is-closed" : ""}`} role="note">
+      <ClockIcon className="icon-sm" />
+      <span>{text}</span>
+    </div>
+  );
+}
+
+/** Store details sheet: header, product strip, info rows, buy (then the route), actions, payment methods. */
+export default function StoreCard({ offer, productId, productTitle, productImage, cheapest, selectHref, tags, onBuy }: Props) {
+  const [routing, setRouting] = useState(false);
   const s = offer.shop;
   const open = s.hours.open_now;
   const statusCls = open == null ? "is-unknown" : open ? "is-open" : "is-closed";
@@ -46,11 +64,10 @@ export default function StoreCard({ offer, productId, productTitle, productImage
   const phonePrice = offer.stock?.status === "available" && offer.stock.verified_price ? offer.stock.verified_price : null;
   const buyPrice = phonePrice ?? offer.price;
   const gap = offer.price != null && cheapest != null ? offer.price - cheapest : null;
-  const geo = s.lat != null && s.lng != null ? `geo:${s.lat},${s.lng}?q=${s.lat},${s.lng}(${encodeURIComponent(s.name)})` : null;
-  // On the shop page, «خرید از …» means going there: the phone's map app, or map directions on a computer.
-  const directions = s.lat != null && s.lng != null
-    ? (touch ? geo! : `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`)
-    : s.website ? (s.website.startsWith("http") ? s.website : `https://${s.website}`) : null;
+  const hasMap = s.lat != null && s.lng != null;
+  const website = s.website ? (s.website.startsWith("http") ? s.website : `https://${s.website}`) : null;
+  // On the shop page, «خرید از …» means going there: the button gives way to the route panel.
+  const buy = () => { onBuy?.(); setRouting(true); };
 
   return (
     <article className="store-card" aria-label={`فروشگاه ${s.name}`}>
@@ -92,21 +109,18 @@ export default function StoreCard({ offer, productId, productTitle, productImage
         <BuyButton shop={s.name} price={buyPrice} tags={tags} href={selectHref} onClick={onBuy} />
       ) : (
         <>
-          <BuyButton shop={s.name} price={buyPrice} tags={tags} href={directions ?? undefined} external={!!directions && !directions.startsWith("geo:")}
-            onClick={onBuy} />
+          {routing && hasMap ? (
+            <RoutePanel shop={s.name} price={buyPrice} lat={s.lat!} lng={s.lng!} distanceM={offer.distance_m}
+              onBack={() => setRouting(false)} />
+          ) : hasMap || !website ? (
+            <BuyButton shop={s.name} price={buyPrice} tags={tags} onClick={buy} />
+          ) : (
+            <BuyButton shop={s.name} price={buyPrice} tags={tags} href={website} external onClick={onBuy} />
+          )}
+          <VerifyNote offer={offer} />
           <InquiryButton offer={offer} productId={productId} />
         </>
       )}
-
-      {touch && geo && !hideRoute ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
-          <a className="btn btn-primary" href={geo} style={{ minHeight: 52, height: "auto" }}>
-            <NavigateIcon className="icon-sm" />
-            مسیریابی
-          </a>
-          <SnappButton shopName={s.name} />
-        </div>
-      ) : null}
 
       <div className="store-acts">
         {phone ? (

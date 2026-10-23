@@ -9,9 +9,18 @@
     },
     {
       "name": "backend",
-      "runtimeExecutable": ".venv/bin/uvicorn",
-      "runtimeArgs": ["app.main:app", "--app-dir", "backend", "--port", "8000"],
-      "port": 8000
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--app-dir", "backend", "--port", "8000", "--reload", "--reload-dir", "backend/app"],
+      "port": 8000,
+      "autoPort": false
+    },
+    {
+      "name": "backend-demo",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["NAVATEL_SEND=false", "ADMIN_PHONES=09120000001", "INQUIRY_CALL_OVERRIDE=", "VERIFY_SMS_OVERRIDE=09120000009", "VOIP_SERVER=invalid.invalid", "VOIP_USER=", "VOIP_PASSWORD=", "SEED_TEST_SHOP=true",
+                      ".venv/bin/python", "-m", "uvicorn", "app.main:app", "--app-dir", "backend", "--port", "8000"],
+      "port": 8000,
+      "autoPort": false
     }
   ]
 }

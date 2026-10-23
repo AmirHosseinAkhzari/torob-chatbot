@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import agent, auth, db, history, insights, inquiry, netprobe, pg, repo, test_shop, voiptest
+from . import admin, agent, auth, catalog, db, history, insights, inquiry, netprobe, pg, repo, roles, test_shop, verify, voiptest
 from .config import settings
 
 log = logging.getLogger("torob-chat")
@@ -24,6 +24,7 @@ logging.getLogger("neo4j").setLevel(logging.ERROR)  # "property does not exist" 
 async def _seed_test_shop() -> None:
     try:
         await asyncio.to_thread(test_shop.add)
+        await asyncio.to_thread(test_shop.add_staff)
         log.info("test shop %s is in Neo4j", test_shop.SHOP_ID)
     except Exception as e:  # Neo4j may still be starting; the app works without the test shop
         log.warning("could not add the test shop: %s", e)
@@ -36,7 +37,9 @@ async def lifespan(_app: FastAPI):
         asyncio.create_task(_seed_test_shop())
     if os.environ.get("NET_PROBE", "false").lower() in ("1", "true", "yes"):
         asyncio.create_task(asyncio.to_thread(netprobe.run))
+    followups = asyncio.create_task(verify.run_forever())  # verification requests: 1-hour Navatel follow-up
     yield
+    followups.cancel()
     db.close()
     pg.close()
 
@@ -95,6 +98,8 @@ async def stores(product_id: str, lat: float | None = None, lng: float | None = 
     await asyncio.to_thread(insights.record_recommendation, user["id"] if user else None, product_id, r,
                             "shop_page" if shop else "stores")
     r.pop("_left_out", None)
+    # Old price, unknown stock or a closed shop: ask the shop (its panel), and say so on each listed shop.
+    await asyncio.to_thread(verify.annotate, r, user["id"] if user else None, shop)
     return r
 
 
@@ -212,7 +217,7 @@ async def otp_verify(req: OtpVerify):
 
 @app.get("/api/me")
 async def me(user: dict = Depends(current_user)):
-    return {"phone": user["phone"], "settings": user["settings"]}
+    return {"phone": user["phone"], "settings": user["settings"], "roles": await asyncio.to_thread(roles.roles_for, user)}
 
 
 class SettingsPatch(BaseModel):
@@ -286,3 +291,206 @@ class StoreChoice(BaseModel):
 async def store_choice(req: StoreChoice, user: dict = Depends(current_user)):
     return await asyncio.to_thread(insights.record_choice, user["id"], req.product_id, req.offer_id,
                                    req.recommended_offer_id, req.lat, req.lng, req.user_said, req.context)
+
+
+# --- پنل مدیریت (admin.<domain>) ----------------------------------------------------------------------------
+
+async def admin_user(user: dict = Depends(current_user)) -> dict:
+    if not roles.is_admin(user):
+        raise HTTPException(403, "این بخش فقط برای مدیرهاست.")
+    return user
+
+
+@app.get("/api/admin/overview")
+async def admin_overview(days: int | None = 30, user: dict = Depends(admin_user)):
+    return await asyncio.to_thread(admin.overview, days if days and days > 0 else None)
+
+
+@app.get("/api/admin/totals")
+async def admin_totals(user: dict = Depends(admin_user)):
+    return await asyncio.to_thread(admin.totals)
+
+
+@app.get("/api/admin/stores")
+async def admin_stores(q: str | None = None, area: str | None = None, test: bool = False, page: int = 1,
+                       user: dict = Depends(admin_user)):
+    return await asyncio.to_thread(admin.stores, (q or "").strip() or None, area or None, test, max(1, page))
+
+
+class HoursDay(BaseModel):
+    status: str = "unknown"  # open | all_day | closed | unknown
+    start: str = ""
+    end: str = ""
+
+
+class ShopForm(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    area: str = Field(default="", max_length=80)
+    address: str = Field(default="", max_length=400)
+    phones: list[str] = Field(default_factory=list, max_length=5)
+    lat: float | None = Field(default=None, ge=35.4, le=36.0)
+    lng: float | None = Field(default=None, ge=51.0, le=51.8)
+    hours: dict[str, HoursDay] = Field(default_factory=dict)
+    payments: list[str] = Field(default_factory=list, max_length=10)
+    categories: list[str] = Field(default_factory=list, max_length=20)
+    test: bool = False
+
+
+@app.get("/api/admin/stores/{shop_id}")
+async def admin_store(shop_id: str, user: dict = Depends(admin_user)):
+    s = await asyncio.to_thread(admin.store, shop_id)
+    if not s:
+        raise HTTPException(404, "فروشگاه پیدا نشد.")
+    return s
+
+
+@app.post("/api/admin/stores")
+async def admin_store_create(req: ShopForm, user: dict = Depends(admin_user)):
+    sid = await asyncio.to_thread(catalog.save_shop, None, req.model_dump(), user["phone"])
+    return {"id": sid}
+
+
+@app.put("/api/admin/stores/{shop_id}")
+async def admin_store_update(shop_id: str, req: ShopForm, user: dict = Depends(admin_user)):
+    if not await asyncio.to_thread(admin.store, shop_id):
+        raise HTTPException(404, "فروشگاه پیدا نشد.")
+    await asyncio.to_thread(catalog.save_shop, shop_id, req.model_dump(), user["phone"])
+    return {"id": shop_id}
+
+
+class StaffIn(BaseModel):
+    phone: str = Field(min_length=10, max_length=20)
+    name: str = Field(default="", max_length=60)
+    role: str = "staff"
+
+
+@app.post("/api/admin/stores/{shop_id}/staff")
+async def admin_staff_add(shop_id: str, req: StaffIn, user: dict = Depends(admin_user)):
+    await asyncio.to_thread(admin.add_staff, shop_id, _mobile(req.phone), req.name, req.role, user["phone"])
+    return {"ok": True}
+
+
+@app.delete("/api/admin/stores/{shop_id}/staff/{phone}")
+async def admin_staff_remove(shop_id: str, phone: str, user: dict = Depends(admin_user)):
+    await asyncio.to_thread(admin.remove_staff, shop_id, _mobile(phone), user["phone"])
+    return {"ok": True}
+
+
+@app.get("/api/admin/offers")
+async def admin_offers(q: str | None = None, shop: str | None = None, stale: bool = False, user: dict = Depends(admin_user)):
+    return {"offers": await asyncio.to_thread(admin.offers, (q or "").strip() or None, shop or None, stale)}
+
+
+class OfferPatch(BaseModel):
+    price: int | None = Field(default=None, ge=1000, le=100_000_000_000)
+    stock: str | None = None
+
+
+async def _patch_offer(offer_id: str, req: OfferPatch, actor: str, source: str):
+    try:
+        return await asyncio.to_thread(catalog.update_offer, offer_id, req.price, req.stock, actor, source)
+    except LookupError:
+        raise HTTPException(404, "کالا پیدا نشد.")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.patch("/api/admin/offers/{offer_id}")
+async def admin_offer_patch(offer_id: str, req: OfferPatch, user: dict = Depends(admin_user)):
+    return await _patch_offer(offer_id, req, user["phone"], "admin")
+
+
+class ImportIn(BaseModel):
+    text: str = Field(min_length=1, max_length=5_000_000)
+    apply: bool = False
+
+
+@app.post("/api/admin/import")
+async def admin_import(req: ImportIn, user: dict = Depends(admin_user)):
+    return await asyncio.to_thread(admin.import_prices, req.text, req.apply, user["phone"])
+
+
+@app.get("/api/admin/changes")
+async def admin_changes(user: dict = Depends(admin_user)):
+    return {"changes": await asyncio.to_thread(admin.changes)}
+
+
+# --- پنل فروشگاه: each shop's staff see only their own shop ----------------------------------------------
+
+async def _shop_access(shop_id: str, user: dict) -> None:
+    if not await asyncio.to_thread(roles.can_manage_shop, user, shop_id):
+        raise HTTPException(403, "به پنل این فروشگاه دسترسی نداری.")
+
+
+@app.get("/api/store/requests/{rid}")
+async def store_request_any(rid: int, user: dict = Depends(current_user)):
+    """A request by id alone (the follow-up SMS links here): finds its shop, then checks access."""
+    row = await asyncio.to_thread(pg.one, "SELECT shop_id FROM verification_requests WHERE id = %s", (rid,))
+    if not row:
+        raise HTTPException(404, "درخواست پیدا نشد.")
+    await _shop_access(row["shop_id"], user)
+    return await asyncio.to_thread(verify.detail, row["shop_id"], rid)
+
+
+@app.get("/api/store/{shop_id}/dashboard")
+async def store_dashboard(shop_id: str, user: dict = Depends(current_user)):
+    await _shop_access(shop_id, user)
+    return await asyncio.to_thread(verify.dashboard, shop_id)
+
+
+@app.get("/api/store/{shop_id}/requests")
+async def store_requests(shop_id: str, status: str = "open", user: dict = Depends(current_user)):
+    await _shop_access(shop_id, user)
+    if status not in ("open", "all", "pending", "in_progress", "verified", "unavailable", "expired", "cancelled"):
+        raise HTTPException(422, "bad status")
+    return {"requests": await asyncio.to_thread(verify.list_requests, shop_id, status)}
+
+
+@app.get("/api/store/{shop_id}/requests/{rid}")
+async def store_request(shop_id: str, rid: int, user: dict = Depends(current_user)):
+    await _shop_access(shop_id, user)
+    r = await asyncio.to_thread(verify.detail, shop_id, rid)
+    if not r:
+        raise HTTPException(404, "درخواست پیدا نشد.")
+    return r
+
+
+@app.post("/api/store/{shop_id}/requests/{rid}/claim")
+async def store_request_claim(shop_id: str, rid: int, user: dict = Depends(current_user)):
+    await _shop_access(shop_id, user)
+    return {"ok": await asyncio.to_thread(verify.claim, shop_id, rid, user["phone"])}
+
+
+class ResolveIn(BaseModel):
+    stock: str
+    price: int | None = Field(default=None, ge=1000, le=100_000_000_000)
+    note: str | None = Field(default=None, max_length=300)
+
+
+@app.post("/api/store/{shop_id}/requests/{rid}/resolve")
+async def store_request_resolve(shop_id: str, rid: int, req: ResolveIn, user: dict = Depends(current_user)):
+    await _shop_access(shop_id, user)
+    try:
+        return await asyncio.to_thread(verify.resolve, shop_id, rid, user["phone"], req.stock, req.price, req.note)
+    except LookupError:
+        raise HTTPException(404, "درخواست پیدا نشد.")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/store/{shop_id}/offers")
+async def store_offers(shop_id: str, q: str | None = None, stale: bool = False, user: dict = Depends(current_user)):
+    await _shop_access(shop_id, user)
+    return {"offers": await asyncio.to_thread(admin.offers, (q or "").strip() or None, shop_id, stale, 200)}
+
+
+@app.patch("/api/store/{shop_id}/offers/{offer_id}")
+async def store_offer_patch(shop_id: str, offer_id: str, req: OfferPatch, user: dict = Depends(current_user)):
+    await _shop_access(shop_id, user)
+    info = await asyncio.to_thread(catalog.offer_info, offer_id)
+    if not info or info["shop_id"] != shop_id:
+        raise HTTPException(404, "کالا پیدا نشد.")
+    out = await _patch_offer(offer_id, req, user["phone"], "store")
+    if req.stock:  # answers an open request for this offer too
+        await asyncio.to_thread(verify.resolve_by_offer, offer_id, req.stock, req.price, user["phone"])
+    return out

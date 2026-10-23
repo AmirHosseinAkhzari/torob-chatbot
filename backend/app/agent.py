@@ -12,7 +12,7 @@ from typing import Any, AsyncIterator
 
 from openai import AsyncOpenAI
 
-from . import repo
+from . import repo, verify
 from .config import settings
 
 log = logging.getLogger("uvicorn.error")
@@ -40,6 +40,7 @@ How to work
    - show_comparison: when the user compares, or is choosing between 2 to 4 models.
    - show_summary: at the end of an answer that weighed several options.
    - show_stores: when the user wants to buy in person, asks where, or asks what is near them. When the user's location is known its result has recommended_shop (nearest and/or cheapest near them, or cheapest in Tehran) and alternatives: the app already shows that shop with directions and Snapp. Name it in one sentence with why; don't list the other shops.
+     Each shop may have needs_shop_confirmation. Never present an unconfirmed price or stock as confirmed: stale_price or no_price → say the last recorded price (if any) is old and the shop is being asked for today's price; stock_unknown → say availability is being checked with the shop; store_closed → say the shop is closed now and will confirm when it opens. Add that the answer is texted to them. If the list is empty, the price and stock are confirmed: give the price plainly.
    Call get_product_details before you state warranty, seller, delivery or payment facts about a product.
 6. Credit and installments (BNPL). The installment providers are ترب‌پی، اسنپ‌پی، دیجی پی، تارا، ازکی‌وام (any spelling, e.g. «اسنپ پی», «ازکی وام»); a shop's own plan is not one of them. The words are فروش اعتباری، خرید قسطی، پرداخت اقساطی، اقساط، BNPL، «الان بخر بعدا پرداخت کن».
    - When the user wants to buy something on credit, search_products with installment ('any', or the provider they named). Only shops that accept it count: the results' prices, shop counts and sellers already cover only those shops.
@@ -478,7 +479,9 @@ async def _execute(name: str, args: dict, turn: Turn) -> AsyncIterator[dict | tu
                     st = by_id[o["offer_id"]]
                     d = {"shop": st["shop"]["name"], "area": st["shop"]["area"], "price": st["price"],
                          "open_now": st["shop"]["hours"]["open_now"], "roles": o["roles"],
-                         "price_updated_days_ago": st["updated_days"], "stock_confirmed_by_phone": o["verified"]}
+                         "price_updated_days_ago": st["updated_days"], "stock_confirmed_by_phone": o["verified"],
+                         # Not reliable yet: the app asks the shop (its panel) and texts the user the answer.
+                         "needs_shop_confirmation": verify.needs(st)}
                     if o["distance_m"] is not None:
                         d["distance_km"] = round(o["distance_m"] / 1000, 1)
                     return d

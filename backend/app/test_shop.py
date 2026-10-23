@@ -6,7 +6,7 @@ on startup when SEED_TEST_SHOP=true, and scripts/add_test_shop.py runs it by han
 """
 import json
 
-from . import db
+from . import db, pg
 
 SHOP_ID = "shop_test_astin"
 SHOP = {
@@ -59,20 +59,28 @@ def add() -> None:
             """
             MATCH (s:Shop {shop_id: $shop})
             MERGE (p:Product {product_id: $pid})
+            ON CREATE SET p.min_price_toman = $price, p.max_price_toman = $price
             SET p.title = $title, p.category_name = $category, p.image_urls = [], p.specs_json = '[]',
-                p.specs_text = '', p.offer_count = 1, p.shop_count = 1,
-                p.min_price_toman = $price, p.max_price_toman = $price, p.test = true
+                p.specs_text = '', p.offer_count = 1, p.shop_count = 1, p.test = true
             MERGE (c:Category {name: $category})
             MERGE (p)-[:IN_CATEGORY]->(c)
             MERGE (o:Offer {offer_id: $oid})
-            SET o.price_toman = $price, o.has_price = true, o.seller_title = $title,
-                o.description = 'فروشگاه آزمایشی آستین', o.warranty = 'بدون گارانتی',
-                o.last_price_changed_at = toString(datetime()), o.test = true
+            // Prices only when first made: later the shop's own answers (its panel) are kept.
+            ON CREATE SET o.price_toman = $price, o.has_price = true, o.last_price_changed_at = toString(datetime())
+            SET o.seller_title = $title, o.description = 'فروشگاه آزمایشی آستین', o.warranty = 'بدون گارانتی',
+                o.test = true
             MERGE (s)-[:HAS_OFFER]->(o)
             MERGE (o)-[:FOR_PRODUCT]->(p)
             """,
             shop=SHOP_ID, pid=pid, oid=pid.replace("product_", "offer_"), title=title, price=price, category=CATEGORY,
         )
+
+
+def add_staff() -> None:
+    """The test shop's phone may open its panel (پنل فروشگاه)."""
+    for phone in SHOP["phones"]:
+        pg.run("INSERT INTO store_staff (shop_id, phone, name, role) VALUES (%s, %s, %s, 'owner') ON CONFLICT DO NOTHING",
+               (SHOP_ID, phone, "آستین"))
 
 
 def remove() -> None:

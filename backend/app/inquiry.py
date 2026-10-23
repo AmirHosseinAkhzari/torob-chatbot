@@ -366,6 +366,11 @@ def _save(job: dict) -> None:
          pg.jsonb({"status": job["status"], "listed_price": job["listed_price"], "quoted_price": job["quoted_price"],
                    "attempts": job["attempts"], "test_call": job["test_call"]})),
     )
+    # The call also answers an open price/stock verification request for this offer.
+    from . import verify
+    verify.resolve_by_offer(job["offer_id"], job["status"],
+                           job["quoted_price"] if job["price_status"] in ("confirmed", "corrected") else job["listed_price"],
+                           "phone_check")
     log.info("inquiry %s saved: %s", job["id"], job["status"])
 
 

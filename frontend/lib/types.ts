@@ -84,6 +84,10 @@ export type Offer = {
   distance_m?: number | null;
   /** The shop's last answer to a phone inquiry (استعلام دستگاه). */
   stock?: { status: "available" | "unavailable"; checked_at: string | null; verified_price?: number | null; price_status?: string | null } | null;
+  /** Why the shop still has to confirm (stale_price, no_price, stock_unknown, store_closed); [] = confirmed. */
+  needs_confirmation?: string[];
+  /** The open request to the shop's panel, when there is one. */
+  verification?: { id: number; status: "pending" | "in_progress"; reasons: string[]; created_at: string } | null;
 };
 
 export type InquiryStatus = "queued" | "preparing" | "ringing" | "in_call" | "available" | "unavailable" | "no_answer" | "failed";

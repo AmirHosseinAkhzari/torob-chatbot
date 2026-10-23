@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import agent, auth, db, history, insights, inquiry, pg, repo, test_shop
+from . import agent, auth, db, history, insights, inquiry, netprobe, pg, repo, test_shop
 from .config import settings
 
 log = logging.getLogger("torob-chat")
@@ -34,6 +34,8 @@ async def lifespan(_app: FastAPI):
     await asyncio.to_thread(pg.init)
     if os.environ.get("SEED_TEST_SHOP", "false").lower() in ("1", "true", "yes"):
         asyncio.create_task(_seed_test_shop())
+    if os.environ.get("NET_PROBE", "false").lower() in ("1", "true", "yes"):
+        asyncio.create_task(asyncio.to_thread(netprobe.run))
     yield
     db.close()
     pg.close()

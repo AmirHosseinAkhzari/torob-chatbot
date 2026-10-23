@@ -1,15 +1,15 @@
 # Stage 1: callctl, the SIP call helper the store inquiry drives (callctl/callctl.c).
-# Debian has no pjproject package, so pjproject is built from source: SIP over UDP, G.711 and
-# telephone-event only, no sound card, video or TLS.
+# Debian has no pjproject package, so pjproject is built from source: SIP over UDP, TCP and TLS
+# (OpenSSL), G.711 and telephone-event only, no sound card or video.
 FROM python:3.12-slim AS callctl
 ARG PJPROJECT_VERSION=2.17
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config curl ca-certificates libssl-dev \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src/pjproject
 RUN curl -fsSL "https://github.com/pjsip/pjproject/archive/refs/tags/${PJPROJECT_VERSION}.tar.gz" \
       | tar -xz --strip-components=1 \
  && ./configure --prefix=/opt/pjproject CFLAGS="-O2 -fPIC" \
-      --disable-video --disable-sound --disable-ssl --disable-opus --disable-speex-codec --disable-speex-aec \
+      --with-ssl --disable-video --disable-sound --disable-opus --disable-speex-codec --disable-speex-aec \
       --disable-ilbc-codec --disable-gsm-codec --disable-g722-codec --disable-g7221-codec --disable-l16-codec \
       --disable-libyuv --disable-libwebrtc --disable-ffmpeg --disable-v4l2 --disable-openh264 --disable-vpx \
       --disable-bcg729 --disable-upnp \

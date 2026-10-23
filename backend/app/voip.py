@@ -20,6 +20,11 @@ log = logging.getLogger("torob-chat.voip")
 SIP_SERVER = os.environ.get("VOIP_SERVER", "voip.asiatech.ir")
 SIP_USER = os.environ.get("VOIP_USER", "")
 SIP_PASSWORD = os.environ.get("VOIP_PASSWORD", "")
+# udp, tcp or tls. Liara lets no SIP out over UDP, so the deployed backend uses tls (Navaphone: port 5061).
+SIP_TRANSPORT = os.environ.get("VOIP_TRANSPORT", "udp").strip().lower()
+SIP_PORT = int(os.environ.get("VOIP_PORT") or (5061 if SIP_TRANSPORT == "tls" else 5060))
+SIP_STUN = os.environ.get("VOIP_STUN", "").strip()        # host:port, for the public audio address behind NAT
+SIP_SRTP = os.environ.get("VOIP_SRTP", "off").strip().lower()  # off | optional | mandatory
 CALLCTL = os.environ.get("CALLCTL_BIN") or str(Path(__file__).resolve().parents[1] / "callctl" / "callctl")
 
 RING_TIMEOUT = 45  # seconds to wait for an answer
@@ -35,7 +40,7 @@ def configured() -> bool:
 def dial_uri(number: str) -> str:
     if number.startswith("sip:"):  # a full SIP address, e.g. a local test phone
         return number
-    # Same form as the working call.sh: national number with its leading 0, port 5060.
+    # Same form as the working call.sh: national number with its leading 0.
     digits = "".join(c for c in number if c.isdigit())
     if digits.startswith("0098"):
         digits = "0" + digits[4:]
@@ -43,7 +48,18 @@ def dial_uri(number: str) -> str:
         digits = "0" + digits[2:]
     elif not digits.startswith("0"):
         digits = "0" + digits
-    return f"sip:{digits}@{SIP_SERVER}:5060"
+    tail = f";transport={SIP_TRANSPORT}" if SIP_TRANSPORT in ("tcp", "tls") else ""
+    return f"sip:{digits}@{SIP_SERVER}:{SIP_PORT}{tail}"
+
+
+def _ca_bundle() -> str:
+    """CA certificates for checking the SIP server's TLS certificate."""
+    try:
+        import certifi
+        return certifi.where()
+    except ImportError:
+        import ssl
+        return ssl.get_default_verify_paths().cafile or ""
 
 
 def wav_seconds(path: Path) -> float:
@@ -76,7 +92,13 @@ class Call:
     async def __aenter__(self):
         await _line.acquire()
         cfg = self.work / "account.cfg"
-        cfg.write_text(f"server {SIP_SERVER}\nuser {SIP_USER}\npassword {SIP_PASSWORD}\n", encoding="utf-8")
+        lines = [f"server {SIP_SERVER}", f"user {SIP_USER}", f"password {SIP_PASSWORD}",
+                 f"transport {SIP_TRANSPORT}", f"port {SIP_PORT}", f"srtp {SIP_SRTP}"]
+        if SIP_TRANSPORT == "tls" and (ca := _ca_bundle()):
+            lines.append(f"ca {ca}")
+        if SIP_STUN:
+            lines.append(f"stun {SIP_STUN}")
+        cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
         os.chmod(cfg, 0o600)
         self.proc = await asyncio.create_subprocess_exec(
             CALLCTL, str(cfg), self.uri,

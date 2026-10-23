@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import agent, auth, db, history, insights, inquiry, netprobe, pg, repo, test_shop
+from . import agent, auth, db, history, insights, inquiry, netprobe, pg, repo, test_shop, voiptest
 from .config import settings
 
 log = logging.getLogger("torob-chat")
@@ -152,6 +152,20 @@ async def start_inquiry(req: InquiryRequest, user: dict = Depends(current_user))
         return await inquiry.start(req.product_id, req.shop_id, user["phone"], user["id"])
     except inquiry.InquiryError as e:
         raise HTTPException(e.status, e.message)
+
+
+@app.post("/api/voip-test")
+async def voip_test_start(user: dict = Depends(current_user)):
+    """Diagnostic: ring the account's own phone, ask for a few keys and #, report what reached the backend."""
+    return voiptest.start(user["phone"])
+
+
+@app.get("/api/voip-test/{test_id}")
+async def voip_test_status(test_id: str, user: dict = Depends(current_user)):
+    job = voiptest.get(test_id)
+    if not job or job["phone"] != user["phone"]:
+        raise HTTPException(404, "test not found")
+    return {"id": job["id"], "status": job["status"], "report": job["report"]}
 
 
 @app.get("/api/inquiries/{inquiry_id}")

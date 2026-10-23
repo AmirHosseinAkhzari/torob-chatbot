@@ -76,8 +76,10 @@ class Hangup(Exception):
 class Call:
     """A live call. Use `async with Call(number) as call:`; then `await call.answered()`, `play`, `key`."""
 
-    def __init__(self, number: str):
+    def __init__(self, number: str, debug_log: Path | None = None):
         self.uri = dial_uri(number)
+        self.debug_log = debug_log       # full SIP log of this call only (voiptest.py)
+        self.remote_rtp: str | None = None
         self.proc: asyncio.subprocess.Process | None = None
         self.work = Path(tempfile.mkdtemp(prefix="callctl-"))
         self.keys_q: asyncio.Queue[str] = asyncio.Queue()
@@ -104,9 +106,13 @@ class Call:
             lines.append(f"stun {SIP_STUN}")
         cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
         os.chmod(cfg, 0o600)
+        env = None
+        if self.debug_log:
+            env = {**os.environ, "CALLCTL_LOG": str(self.debug_log)}
         self.proc = await asyncio.create_subprocess_exec(
             CALLCTL, str(cfg), self.uri,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            env=env,
         )
         self._reader = asyncio.create_task(self._read())
         log.info("calling %s", self.uri)
@@ -149,6 +155,8 @@ class Call:
                 self.keys_seen.append(line[5:])
             elif line.startswith("STATS "):
                 self.stats = line[6:]
+            elif line.startswith("REMOTE_RTP "):
+                self.remote_rtp = line[11:]
             elif line == "PLAYEND":
                 self.playend.set()
             elif line == "MEDIA":

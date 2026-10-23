@@ -2,8 +2,8 @@
 
 Athena TTS (scripts/athena_tts.py) when a token is set, Edge TTS otherwise or when Athena fails
 (Athena's free plan allows only 2 clips a week). Clips are cached by text, so asking the same
-question twice costs nothing. Output: 16 kHz mono 16-bit WAV, converted with macOS `afconvert`, or with
-`ffmpeg` / `mpg123` on Linux (the Docker image).
+question twice costs nothing. Output: 16 kHz mono 16-bit WAV, converted with macOS `afconvert`, else with
+the `miniaudio` Python package (the Docker image: no system packages to install), else `ffmpeg` / `mpg123`.
 """
 import asyncio
 import hashlib
@@ -62,12 +62,31 @@ def _convert_cmd(mp3: Path, wav: Path) -> list[str]:
                 "-c:a", "pcm_s16le", str(wav)]
     if shutil.which("mpg123"):
         return ["mpg123", "-q", "--mono", "--rate", "16000", "--encoding", "s16", "-w", str(wav), str(mp3)]
-    raise RuntimeError("no audio converter: install ffmpeg or mpg123")
+    raise RuntimeError("no audio converter: pip install miniaudio, or install ffmpeg or mpg123")
+
+
+def _decode(mp3: Path, wav: Path) -> None:
+    """MP3 to 16 kHz mono 16-bit WAV."""
+    if not shutil.which("afconvert"):
+        try:
+            import miniaudio
+        except ImportError:
+            miniaudio = None
+        if miniaudio:
+            sound = miniaudio.decode_file(str(mp3), output_format=miniaudio.SampleFormat.SIGNED16,
+                                          nchannels=1, sample_rate=16000)
+            with wave.open(str(wav), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(sound.samples.tobytes())
+            return
+    subprocess.run(_convert_cmd(mp3, wav), check=True, capture_output=True)
 
 
 def _to_wav(mp3: Path, wav: Path, lead_silence: float, tail_silence: float) -> None:
     raw = wav.with_suffix(".raw.wav")
-    subprocess.run(_convert_cmd(mp3, raw), check=True, capture_output=True)
+    _decode(mp3, raw)
     # Pad with silence: the start is often cut while the call connects, and the player loops,
     # so the tail is the pause before the question repeats.
     with wave.open(str(raw)) as src:

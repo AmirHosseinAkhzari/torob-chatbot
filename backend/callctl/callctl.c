@@ -13,6 +13,7 @@
  *                      HANGUP            hang up and exit
  * Events on stdout:    STATE <CALLING|EARLY|CONNECTING|CONFIRMED>
  *                      MEDIA             audio is flowing (clips can be played)
+ *                      REMOTE_RTP <addr> where the other side receives our audio
  *                      DTMF <digit> <rfc2833|info>  a key pressed by the other side, and how it came
  *                      STATS rx_pkt=<n> tx_pkt=<n> rx_lost=<n>  audio packets, when the call's audio ends
  *                      PLAYEND           the clip finished
@@ -61,6 +62,16 @@ static void on_call_media_state(pjsua_call_id call_id) {
     if (ci.media_status == PJSUA_CALL_MEDIA_ACTIVE && !g_media) {
         g_media = PJ_TRUE;
         emit("MEDIA");
+        for (unsigned i = 0; i < ci.media_cnt; i++) {   /* where the other side wants our audio */
+            pjsua_stream_info si;
+            char addr[PJ_INET6_ADDRSTRLEN + 10];
+            if (ci.media[i].type != PJMEDIA_TYPE_AUDIO) continue;
+            if (pjsua_call_get_stream_info(call_id, i, &si) == PJ_SUCCESS && si.type == PJMEDIA_TYPE_AUDIO) {
+                pj_sockaddr_print(&si.info.aud.rem_addr, addr, sizeof addr, 3);
+                emit("REMOTE_RTP %s", addr);
+            }
+            break;
+        }
     }
 }
 
